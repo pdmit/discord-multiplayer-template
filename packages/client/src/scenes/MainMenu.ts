@@ -7,18 +7,21 @@ export class MainMenu extends Scene {
   }
 
   create() {
-    const bg = this.add.image(this.cameras.main.width / 2, this.cameras.main.height / 2, "background");
-    let scaleX = this.cameras.main.width / bg.width + 0.2;
-    let scaleY = this.cameras.main.height / bg.height + 0.2;
-    let scale = Math.max(scaleX, scaleY);
-    bg.setScale(scale).setScrollFactor(0);
+    const { width, height } = this.cameras.main;
 
-    this.add.image(Number(this.game.config.width) * 0.5, 300, "logo");
+    const bg = this.add
+      .tileSprite(0, 0, width * 1.5, height, "background-day")
+      .setOrigin(0, 0);
+    this.add.tileSprite(0, height - 112, width * 1.5, 112, "base").setOrigin(0, 0);
 
     this.add
-      .text(Number(this.game.config.width) * 0.5, 460, "Main Menu", {
+      .image(Number(this.game.config.width) * 0.5, Number(this.game.config.height) * 0.35, "message")
+      .setScale(1.2);
+
+    this.add
+      .text(Number(this.game.config.width) * 0.5, Number(this.game.config.height) * 0.65, "Tap or press SPACE to join", {
         fontFamily: "Arial Black",
-        fontSize: 38,
+        fontSize: 32,
         color: "#ffffff",
         stroke: "#000000",
         strokeThickness: 8,
@@ -27,6 +30,11 @@ export class MainMenu extends Scene {
       .setOrigin(0.5);
 
     this.input.once("pointerdown", async () => {
+      await authorizeDiscordUser();
+      this.scene.start("Game");
+    });
+
+    this.input.keyboard?.once("keydown-SPACE", async () => {
       await authorizeDiscordUser();
       this.scene.start("Game");
     });
