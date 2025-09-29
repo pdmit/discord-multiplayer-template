@@ -1,3 +1,23 @@
+# Discord Multiplayer Activity based on the Phaser Discord Multiplayer Games Template (more info about the template below)
+
+## Concept
+
+A flappy bird multiplayer prototype. Compete against your friends to see who is the last one standing.
+
+## Work in Progress
+
+## Future Ideas
+
+- Play against a "gamemaster" who sets up the game in real time
+	- The gamemaster tries to win by placing obstacles (gets a limited amount of pipes, but replenishes)
+	- The gamemaster switches every round with whomever won
+
+- Power-ups
+	- Reduce gravity
+	- Increase gravity for other players
+
+- New obstacles/hazards
+
 # Phaser Discord Multiplayer Games Template
 
 This project template is designed to be used in conjunction with our [Creating Multiplayer Discord Games with Phaser](https://phaser.io/tutorials/creating-multiplayer-discord-games-with-phaser) tutorial. It provides a starting point for creating multiplayer games on Discord with Colyseus and Phaser, utilising their new Embedded App SDK.
