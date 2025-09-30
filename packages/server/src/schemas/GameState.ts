@@ -1,17 +1,52 @@
-import { Schema, type, MapSchema } from "@colyseus/schema";
+import { Schema, type, MapSchema, ArraySchema } from "@colyseus/schema";
 
-export class Draggables extends Schema {
+export class PlayerState extends Schema {
   @type("string")
-  imageId = "";
+  name = "";
+
+  @type("string")
+  skin: "yellow" | "blue" | "red" = "yellow";
+
+  @type("boolean")
+  ready = false;
+
+  @type("number")
+  y = 0;
+
+  @type("number")
+  velocity = 0;
+
+  @type("boolean")
+  alive = true;
+
+  @type("number")
+  score = 0;
+
+  @type("number")
+  lastPassedPipeId = 0;
+}
+
+export class PipeState extends Schema {
+  @type("number")
+  id = 0;
 
   @type("number")
   x = 0;
 
   @type("number")
-  y = 0;
+  gapY = 0;
 }
 
 export class GameState extends Schema {
-  @type({ map: Draggables })
-  draggables = new MapSchema<Draggables>();
+  @type({ map: PlayerState })
+  players = new MapSchema<PlayerState>();
+
+  @type([PipeState])
+  pipes = new ArraySchema<PipeState>();
+
+  @type("boolean")
+  running = false;
+
+  @type("string")
+  winnerId = "";
 }
