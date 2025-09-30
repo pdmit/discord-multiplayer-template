@@ -1,6 +1,6 @@
 import { Scene } from "phaser";
 import { Room, Client, getStateCallbacks } from "colyseus.js";
-import { getUserName } from "../utils/discordSDK";
+import { discordSdk, getUserName } from "../utils/discordSDK";
 
 type PlayerState = {
   name: string;
@@ -32,6 +32,8 @@ export class Game extends Scene {
   private readonly pipeGap = 230;
   private readonly birdX = 260;
   private readonly scrollSpeed = 220;
+  private updatingActivity = false;
+  private pendingActivityUpdate = false;
 
   constructor() {
     super("Game");
@@ -130,6 +132,7 @@ export class Game extends Scene {
         name: getUserName(),
       });
       this.localPlayerId = this.room.sessionId;
+      void this.updateDiscordActivityPresence();
     } catch (e) {
       console.log(`Could not connect with the server: ${e}`);
       this.scoreText.setText("Connection failed");
@@ -341,6 +344,7 @@ export class Game extends Scene {
 
     this.scoreBackdrop.width = this.scoreText.width + 40;
     this.scoreBackdrop.height = this.scoreText.height + 30;
+    void this.updateDiscordActivityPresence();
   }
 
   private updateStatusMessage() {
@@ -365,6 +369,7 @@ export class Game extends Scene {
     } else {
       this.statusText.setText("Flap to stay alive! Last bird standing wins.");
     }
+    void this.updateDiscordActivityPresence();
   }
 
   private getPlayerCount() {
@@ -377,5 +382,43 @@ export class Game extends Scene {
       count += 1;
     });
     return count;
+  }
+
+  private async updateDiscordActivityPresence() {
+    if (!this.room || !discordSdk) {
+      return;
+    }
+
+    if (this.updatingActivity) {
+      this.pendingActivityUpdate = true;
+      return;
+    }
+
+    this.updatingActivity = true;
+
+    const playerCount = this.getPlayerCount();
+    const maxPlayers = this.room.maxClients ?? 25;
+    const running = this.room.state.running as boolean;
+
+    try {
+      await discordSdk.commands.setActivity({
+        activity: {
+          type: 0,
+          state: running ? "In Game" : "In Lobby",
+          details: `${playerCount} player${playerCount === 1 ? "" : "s"} in room`,
+          party: {
+            size: [playerCount, maxPlayers],
+          },
+        },
+      });
+    } catch (error) {
+      console.error("Failed to update Discord activity", error);
+    } finally {
+      this.updatingActivity = false;
+      if (this.pendingActivityUpdate) {
+        this.pendingActivityUpdate = false;
+        void this.updateDiscordActivityPresence();
+      }
+    }
   }
 }
