@@ -35,6 +35,7 @@ export class Game extends Scene {
   private readyInfoText!: Phaser.GameObjects.Text;
   private localPlayerId = "";
   private localReady = false;
+
   private readonly pipeGap = 230;
   private readonly birdX = 260;
   private readonly scrollSpeed = 220;
@@ -72,7 +73,7 @@ export class Game extends Scene {
       .rectangle(width / 2, 40, width * 0.6, 70, 0x000000, 0.35)
       .setOrigin(0.5)
       .setDepth(10);
-
+    
     this.scoreText = this.add
       .text(width / 2, 40, "Connecting...", {
         fontFamily: "Arial Black",
@@ -142,6 +143,7 @@ export class Game extends Scene {
         stroke: "#000000",
         strokeThickness: 4,
       })
+
       .setOrigin(0.5)
       .setDepth(11);
   }
@@ -204,6 +206,7 @@ export class Game extends Scene {
       $(player).onChange((changes: any) => {
         this.syncPlayer(sessionId, player, changes);
       });
+
     });
 
     $(this.room.state.players).onRemove((_player: PlayerState, sessionId: string) => {
@@ -229,12 +232,14 @@ export class Game extends Scene {
         if (change.field === "running") {
           this.updateReadyUI();
         }
+
       });
     });
 
     this.updateStatusMessage();
     this.updateReadyUI();
     this.refreshReadyInfo();
+
   }
 
   private addPlayer(sessionId: string, player: PlayerState) {
@@ -422,7 +427,6 @@ export class Game extends Scene {
 
     this.scoreBackdrop.width = this.scoreText.width + 40;
     this.scoreBackdrop.height = this.scoreText.height + 30;
-
     this.refreshReadyInfo();
   }
 
@@ -447,6 +451,7 @@ export class Game extends Scene {
         this.statusText.setText(
           `Click Ready Up when you're set to fly!\nReady: ${readyCount}/${playerCount}`,
         );
+
       } else {
         this.statusText.setText("Waiting for players to join...");
       }
@@ -455,6 +460,7 @@ export class Game extends Scene {
     }
 
     this.refreshReadyInfo();
+
   }
 
   private getPlayerCount() {
@@ -513,5 +519,6 @@ export class Game extends Scene {
     const ready = this.getReadyCount();
     const total = this.getPlayerCount();
     this.readyInfoText.setText(`Ready: ${ready}/${total}`);
+
   }
 }
