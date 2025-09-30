@@ -6,14 +6,11 @@ export class Background extends Scene {
   }
 
   create() {
-    this.cameras.main.setBackgroundColor(0xffffff);
+    this.cameras.main.setBackgroundColor(0x70c5ce);
     this.scene.sendToBack();
 
-    const fridge_bg = this.add.image(
-      Number(this.game.config.width) / 2,
-      Number(this.game.config.height) / 2,
-      "fridge_bg"
-    );
-    fridge_bg.setScale(0.4);
+    const { width, height } = this.cameras.main;
+    this.add.tileSprite(0, 0, width * 1.5, height, "background-day").setOrigin(0, 0);
+    this.add.tileSprite(0, height - 112, width * 1.5, 112, "base").setOrigin(0, 0);
   }
 }
