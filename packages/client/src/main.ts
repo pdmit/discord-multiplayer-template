@@ -8,7 +8,7 @@ import { Preloader } from "./scenes/Preloader";
 import { Background } from "./scenes/Background";
 
 (async () => {
-  initiateDiscordSDK();
+  await initiateDiscordSDK();
 
   new ScaleFlow({
     type: Phaser.AUTO,
