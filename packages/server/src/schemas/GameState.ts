@@ -21,6 +21,9 @@ export class PlayerState extends Schema {
 
   @type("number")
   lastPassedPipeId = 0;
+
+  @type("boolean")
+  ready = false;
 }
 
 export class PipeState extends Schema {

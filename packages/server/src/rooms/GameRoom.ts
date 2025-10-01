@@ -17,7 +17,6 @@ export class GameRoom extends Room<GameState> {
   private pipeWidth = 52;
   private nextPipeId = 1;
   private elapsedSincePipe = 0;
-  private roundCooldown = 0;
   private skins: Array<PlayerState["skin"]> = ["yellow", "blue", "red"];
 
   private worldWidth = 1280;
@@ -32,14 +31,21 @@ export class GameRoom extends Room<GameState> {
         return;
       }
 
-      if (!this.state.running) {
-        this.startRound();
+      if (!this.state.running || !player.alive) {
         return;
       }
 
-      if (player.alive) {
-        player.velocity = this.flapVelocity;
+      player.velocity = this.flapVelocity;
+    });
+
+    this.onMessage("setReady", (client, message: { ready?: boolean }) => {
+      const player = this.state.players.get(client.sessionId);
+      if (!player || this.state.running) {
+        return;
       }
+
+      player.ready = Boolean(message?.ready);
+      this.tryStartRound();
     });
   }
 
@@ -54,12 +60,9 @@ export class GameRoom extends Room<GameState> {
     player.alive = true;
     player.score = 0;
     player.lastPassedPipeId = 0;
+    player.ready = false;
 
     this.state.players.set(client.sessionId, player);
-
-    if (!this.state.running && this.state.players.size >= 1) {
-      this.startRound();
-    }
   }
 
   onLeave(client: Client): void {
@@ -67,7 +70,14 @@ export class GameRoom extends Room<GameState> {
     this.state.players.delete(client.sessionId);
 
     if (this.state.players.size === 0) {
-      this.resetRound();
+      this.state.running = false;
+      this.state.winnerId = "";
+      this.clearLevel();
+      return;
+    }
+
+    if (!this.state.running) {
+      this.tryStartRound();
     }
   }
 
@@ -90,18 +100,36 @@ export class GameRoom extends Room<GameState> {
     return selected;
   }
 
-  private resetRound() {
-    this.state.running = false;
-    this.state.winnerId = "";
+  private clearLevel() {
     this.elapsedSincePipe = 0;
-    this.roundCooldown = 0;
     this.nextPipeId = 1;
     this.state.pipes.splice(0, this.state.pipes.length);
   }
 
+  private setAllPlayersReady(value: boolean) {
+    for (const [, player] of this.state.players) {
+      player.ready = value;
+    }
+  }
+
+  private tryStartRound() {
+    if (this.state.running || this.state.players.size === 0) {
+      return;
+    }
+
+    for (const [, player] of this.state.players) {
+      if (!player.ready) {
+        return;
+      }
+    }
+
+    this.startRound();
+  }
+
   private startRound() {
-    this.resetRound();
     this.state.running = true;
+    this.state.winnerId = "";
+    this.clearLevel();
 
     for (const [, player] of this.state.players) {
       player.alive = true;
@@ -131,12 +159,6 @@ export class GameRoom extends Room<GameState> {
 
   private update(delta: number) {
     if (!this.state.running) {
-      if (this.state.players.size > 0) {
-        this.roundCooldown += delta;
-        if (this.roundCooldown > 3) {
-          this.startRound();
-        }
-      }
       return;
     }
 
@@ -203,7 +225,11 @@ export class GameRoom extends Room<GameState> {
     if (alivePlayers.length <= 1) {
       this.state.running = false;
       this.state.winnerId = alivePlayers.length === 1 ? this.findPlayerId(alivePlayers[0]) : "";
-      this.roundCooldown = 0;
+      this.clearLevel();
+      this.setAllPlayersReady(false);
+      for (const [, player] of this.state.players) {
+        player.velocity = 0;
+      }
     }
   }
 
