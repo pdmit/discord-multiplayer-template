@@ -10,6 +10,7 @@ type PlayerState = {
   alive: boolean;
   score: number;
   lastPassedPipeId: number;
+  ready: boolean;
 };
 
 type PipeState = {
@@ -24,11 +25,15 @@ export class Game extends Scene {
   private ground!: Phaser.GameObjects.TileSprite;
   private playerSprites = new Map<string, Phaser.GameObjects.Sprite>();
   private pipeSprites = new Map<number, { top: Phaser.GameObjects.Image; bottom: Phaser.GameObjects.Image }>();
-  private playerCache = new Map<string, { alive: boolean; score: number }>();
+  private playerCache = new Map<string, { alive: boolean; score: number; ready: boolean }>();
   private scoreText!: Phaser.GameObjects.Text;
   private scoreBackdrop!: Phaser.GameObjects.Rectangle;
   private statusText!: Phaser.GameObjects.Text;
+  private readyCountText!: Phaser.GameObjects.Text;
+  private readyButtonBackground?: Phaser.GameObjects.Rectangle;
+  private readyButtonLabel?: Phaser.GameObjects.Text;
   private localPlayerId = "";
+  private localPlayerReady = false;
   private readonly pipeGap = 230;
   private readonly birdX = 260;
   private readonly scrollSpeed = 220;
@@ -63,6 +68,7 @@ export class Game extends Scene {
 
   private setupUI() {
     const width = Number(this.game.config.width);
+    const height = Number(this.game.config.height);
 
     this.scoreBackdrop = this.add
       .rectangle(width / 2, 40, width * 0.6, 70, 0x000000, 0.35)
@@ -93,8 +99,60 @@ export class Game extends Scene {
       .setOrigin(0.5)
       .setDepth(11);
 
+    this.readyCountText = this.add
+      .text(width / 2, 170, "", {
+        fontFamily: "Arial",
+        fontSize: 22,
+        color: "#ffffff",
+        stroke: "#000000",
+        strokeThickness: 4,
+        align: "center",
+      })
+      .setOrigin(0.5)
+      .setDepth(11);
+
+    const buttonY = height - 120;
+    const buttonWidth = Math.min(320, width * 0.5);
+    const buttonHeight = 64;
+
+    this.readyButtonBackground = this.add
+      .rectangle(width / 2, buttonY, buttonWidth, buttonHeight, 0x3498db, 0.85)
+      .setOrigin(0.5)
+      .setDepth(10)
+      .setVisible(false);
+
+    this.readyButtonLabel = this.add
+      .text(width / 2, buttonY, "Ready Up", {
+        fontFamily: "Arial Black",
+        fontSize: 28,
+        color: "#ffffff",
+        stroke: "#000000",
+        strokeThickness: 6,
+        align: "center",
+      })
+      .setOrigin(0.5)
+      .setDepth(11)
+      .setVisible(false);
+
+    this.readyButtonBackground
+      .setInteractive({ useHandCursor: true })
+      .on("pointerdown", () => {
+        this.toggleReady();
+      })
+      .on("pointerover", () => {
+        const button = this.readyButtonBackground;
+        if (button?.visible) {
+          button.setFillStyle(this.localPlayerReady ? 0x27ae60 : 0x2980b9, this.localPlayerReady ? 0.95 : 0.9);
+        }
+      })
+      .on("pointerout", () => {
+        if (this.readyButtonBackground?.visible) {
+          this.updateReadyButtonStyle();
+        }
+      });
+
     this.add
-      .text(width / 2, Number(this.game.config.height) - 30, `Connected as: ${getUserName()}`, {
+      .text(width / 2, height - 30, `Connected as: ${getUserName()}`, {
         font: "18px Arial",
         color: "#ffffff",
         stroke: "#000000",
@@ -102,6 +160,8 @@ export class Game extends Scene {
       })
       .setOrigin(0.5)
       .setDepth(11);
+
+    this.updateReadyUI();
   }
 
   private setupInput() {
@@ -111,12 +171,70 @@ export class Game extends Scene {
   }
 
   private handleFlap() {
-    if (!this.room) {
+    if (!this.room || !this.room.state.running) {
       return;
     }
 
     this.room.send("flap");
     this.sound.play("wing", { volume: 0.4 });
+  }
+
+  private toggleReady() {
+    if (!this.room || this.room.state.running) {
+      return;
+    }
+
+    const nextReady = !this.localPlayerReady;
+    this.localPlayerReady = nextReady;
+    this.updateReadyUI();
+    this.room.send("setReady", { ready: nextReady });
+  }
+
+  private updateReadyButtonStyle() {
+    if (!this.readyButtonBackground) {
+      return;
+    }
+
+    const color = this.localPlayerReady ? 0x2ecc71 : 0x3498db;
+    const alpha = this.localPlayerReady ? 0.95 : 0.85;
+    this.readyButtonBackground.setFillStyle(color, alpha);
+  }
+
+  private updateReadyUI() {
+    if (!this.readyButtonBackground || !this.readyButtonLabel || !this.readyCountText) {
+      return;
+    }
+
+    if (!this.room) {
+      this.readyButtonBackground.setVisible(false);
+      this.readyButtonBackground.disableInteractive();
+      this.readyButtonLabel.setVisible(false);
+      this.readyCountText.setVisible(false);
+      return;
+    }
+
+    const running = this.room.state.running as boolean;
+    const playerCount = this.getPlayerCount();
+    const readyCount = this.getReadyCount();
+    const showLobbyUi = !running && playerCount > 0;
+
+    this.readyCountText.setVisible(showLobbyUi);
+    if (showLobbyUi) {
+      this.readyCountText.setText(`Ready players: ${readyCount} / ${playerCount}`);
+    } else {
+      this.readyCountText.setText("");
+    }
+
+    this.readyButtonBackground.setVisible(showLobbyUi);
+    this.readyButtonLabel.setVisible(showLobbyUi);
+
+    if (showLobbyUi) {
+      this.readyButtonLabel.setText(this.localPlayerReady ? "Cancel Ready" : "Ready Up");
+      this.updateReadyButtonStyle();
+      this.readyButtonBackground.setInteractive({ useHandCursor: true });
+    } else {
+      this.readyButtonBackground.disableInteractive();
+    }
   }
 
   private async connect() {
@@ -190,10 +308,14 @@ export class Game extends Scene {
     }
 
     this.playerSprites.set(sessionId, sprite);
-    this.playerCache.set(sessionId, { alive: player.alive, score: player.score });
+    this.playerCache.set(sessionId, { alive: player.alive, score: player.score, ready: player.ready });
+    if (sessionId === this.localPlayerId) {
+      this.localPlayerReady = player.ready;
+    }
     this.syncPlayer(sessionId, player, []);
     this.refreshScoreboard();
     this.updateStatusMessage();
+    this.updateReadyUI();
   }
 
   private removePlayer(sessionId: string) {
@@ -203,8 +325,12 @@ export class Game extends Scene {
     }
     this.playerSprites.delete(sessionId);
     this.playerCache.delete(sessionId);
+    if (sessionId === this.localPlayerId) {
+      this.localPlayerReady = false;
+    }
     this.refreshScoreboard();
     this.updateStatusMessage();
+    this.updateReadyUI();
   }
 
   private syncPlayer(sessionId: string, player: PlayerState, changes: any[]) {
@@ -218,6 +344,7 @@ export class Game extends Scene {
     sprite.setRotation(rotation);
 
     const cached = this.playerCache.get(sessionId);
+    const readyChanged = !cached || cached.ready !== player.ready;
     if (cached) {
       if (cached.alive && !player.alive && sessionId === this.localPlayerId) {
         this.sound.play("hit", { volume: 0.4 });
@@ -239,13 +366,21 @@ export class Game extends Scene {
       sprite.setAlpha(0.8);
     }
 
-    this.playerCache.set(sessionId, { alive: player.alive, score: player.score });
+    this.playerCache.set(sessionId, { alive: player.alive, score: player.score, ready: player.ready });
+    if (sessionId === this.localPlayerId) {
+      this.localPlayerReady = player.ready;
+    }
 
     const changeList = Array.isArray(changes) ? changes : [];
-    const shouldRefresh = changeList.some((change: any) => change.field === "score" || change.field === "alive");
+    const shouldRefresh = changeList.some(
+      (change: any) => change.field === "score" || change.field === "alive" || change.field === "ready",
+    );
     if (shouldRefresh) {
       this.refreshScoreboard();
       this.updateStatusMessage();
+    }
+    if (readyChanged) {
+      this.updateReadyUI();
     }
   }
 
@@ -313,13 +448,14 @@ export class Game extends Scene {
       return;
     }
 
-    const players: Array<{ name: string; score: number; alive: boolean; isLocal: boolean }> = [];
+    const players: Array<{ name: string; score: number; alive: boolean; ready: boolean; isLocal: boolean }> = [];
 
     this.room.state.players.forEach((player: PlayerState, sessionId: string) => {
       players.push({
         name: player.name,
         score: player.score,
         alive: player.alive,
+        ready: player.ready,
         isLocal: sessionId === this.localPlayerId,
       });
     });
@@ -331,19 +467,27 @@ export class Game extends Scene {
       return b.score - a.score;
     });
 
+    const running = this.room.state.running as boolean;
+
     if (players.length === 0) {
       this.scoreText.setText("Waiting for players...");
     } else {
       const lines = players.map((player) => {
         const prefix = player.isLocal ? "▶ " : "";
-        const status = player.alive ? "🟢" : "✖";
-        return `${prefix}${player.name}: ${player.score} ${status}`;
+        if (running) {
+          const status = player.alive ? "🟢" : "✖";
+          return `${prefix}${player.name}: ${player.score} ${status}`;
+        }
+
+        const status = player.ready ? "✅ Ready" : "⌛ Waiting";
+        return `${prefix}${player.name} ${status}`;
       });
       this.scoreText.setText(lines.join("\n"));
     }
 
     this.scoreBackdrop.width = this.scoreText.width + 40;
     this.scoreBackdrop.height = this.scoreText.height + 30;
+    this.updateReadyUI();
     void this.updateDiscordActivityPresence();
   }
 
@@ -357,18 +501,25 @@ export class Game extends Scene {
 
     if (!running) {
       const playerCount = this.getPlayerCount();
+      const readyCount = this.getReadyCount();
       if (winnerId) {
         const winner = this.room.state.players.get(winnerId) as PlayerState | undefined;
         const winnerName = winner ? winner.name : "Nobody";
-        this.statusText.setText(`${winnerName} wins!\nNext round starting soon...\nTap or press SPACE to play`);
+        this.statusText.setText(`${winnerName} wins!\nPress Ready to play again.`);
       } else if (playerCount > 0) {
-        this.statusText.setText("Get ready! Tap or press SPACE to start flapping");
+        const everyoneReady = readyCount > 0 && readyCount === playerCount;
+        if (everyoneReady) {
+          this.statusText.setText("All players are ready! Starting the round...");
+        } else {
+          this.statusText.setText("Press Ready when you are set.\nThe round begins once everyone is ready.");
+        }
       } else {
         this.statusText.setText("Waiting for players to join...");
       }
     } else {
       this.statusText.setText("Flap to stay alive! Last bird standing wins.");
     }
+    this.updateReadyUI();
     void this.updateDiscordActivityPresence();
   }
 
@@ -380,6 +531,20 @@ export class Game extends Scene {
     let count = 0;
     this.room.state.players.forEach(() => {
       count += 1;
+    });
+    return count;
+  }
+
+  private getReadyCount() {
+    if (!this.room) {
+      return 0;
+    }
+
+    let count = 0;
+    this.room.state.players.forEach((player: PlayerState) => {
+      if (player.ready) {
+        count += 1;
+      }
     });
     return count;
   }
