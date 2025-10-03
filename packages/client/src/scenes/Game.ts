@@ -1,26 +1,14 @@
 import { Scene } from "phaser";
 import { Room, Client, getStateCallbacks } from "colyseus.js";
 import { discordSdk, getUserName } from "../utils/discordSDK";
-
-type PlayerState = {
-  name: string;
-  skin: "yellow" | "blue" | "red";
-  y: number;
-  velocity: number;
-  alive: boolean;
-  score: number;
-  lastPassedPipeId: number;
-  ready: boolean;
-};
-
-type PipeState = {
-  id: number;
-  x: number;
-  gapY: number;
-};
+import type {
+  ReplicatedGameState,
+  ReplicatedPipeState,
+  ReplicatedPlayerState,
+} from "../state/replicatedState";
 
 export class Game extends Scene {
-  private room?: Room<any>;
+  private room?: Room<ReplicatedGameState>;
   private background!: Phaser.GameObjects.TileSprite;
   private ground!: Phaser.GameObjects.TileSprite;
   private playerSprites = new Map<string, Phaser.GameObjects.Sprite>();
@@ -44,6 +32,8 @@ export class Game extends Scene {
   private readonly scrollSpeed = 220;
   private updatingActivity = false;
   private pendingActivityUpdate = false;
+  private readonly trackedPlayerListeners = new Set<string>();
+  private readonly trackedPipeListeners = new Set<number>();
 
   constructor() {
     super("Game");
@@ -78,57 +68,6 @@ export class Game extends Scene {
     const scroll = (this.scrollSpeed * delta) / 1000;
     this.background.tilePositionX += scroll;
     this.ground.tilePositionX += scroll;
-    
-    // Periodic sync for ready state changes and running state
-    if (this.room && this.room.state && this.room.state.players) {
-      let needsUIUpdate = false;
-      
-      // Check if running state changed
-      const currentRunning = this.room.state.running as boolean;
-      if (currentRunning !== this.lastKnownRunning) {
-        console.log("Running state changed from", this.lastKnownRunning, "to", currentRunning);
-        this.lastKnownRunning = currentRunning;
-        needsUIUpdate = true;
-        this.updateStatusMessage();
-        
-        // When game starts, check for existing pipes
-        if (currentRunning && this.room.state.pipes) {
-          console.log("Game started, checking for pipes:", this.room.state.pipes.length);
-          this.room.state.pipes.forEach((pipe: PipeState) => {
-            console.log("Pipe in room state:", pipe.id, "at x:", pipe.x, "gapY:", pipe.gapY);
-            if (!this.pipeSprites.has(pipe.id)) {
-              console.log("Adding missing pipe:", pipe.id);
-              this.addPipe(pipe);
-            } else {
-              console.log("Pipe already exists:", pipe.id);
-            }
-          });
-        }
-      }
-      
-      this.room.state.players.forEach((player: PlayerState, sessionId: string) => {
-        const cached = this.playerCache.get(sessionId);
-        if (cached && cached.ready !== player.ready) {
-          console.log("Ready state changed for player:", sessionId, "from", cached.ready, "to", player.ready);
-          this.syncPlayer(sessionId, player, []);
-          needsUIUpdate = true;
-        } else if (!cached) {
-          // If player is not in cache, add them
-          console.log("Player not in cache, adding:", sessionId);
-          this.addPlayer(sessionId, player);
-          needsUIUpdate = true;
-        }
-        // Debug: log current ready state
-        if (sessionId === this.localPlayerId) {
-          console.log("Local player ready state - cached:", cached?.ready, "room:", player.ready);
-        }
-      });
-      
-      // Force UI update if any state changed
-      if (needsUIUpdate) {
-        this.updateReadyUI();
-      }
-    }
   }
 
   private setupWorld() {
@@ -377,13 +316,6 @@ export class Game extends Scene {
     // Send to server
     this.room.send("setReady", { ready: nextReady });
     console.log("Sent setReady message to server");
-    
-    // Also update the server state immediately to avoid sync issues
-    const player = this.room.state.players.get(this.localPlayerId);
-    if (player) {
-      player.ready = nextReady;
-      console.log("Updated server state immediately for player:", this.localPlayerId, "to:", nextReady);
-    }
   }
 
   private updateReadyButtonStyle() {
@@ -473,73 +405,83 @@ export class Game extends Scene {
   }
 
   private registerStateListeners() {
-    if (!this.room || !this.room.state) {
+    if (!this.room) {
       return;
     }
 
+    const state = this.room.state;
     const $ = getStateCallbacks(this.room);
 
-    // Handle existing players (in case they were added before listeners were registered)
-    if (this.room.state.players) {
-      console.log("Found", this.room.state.players.size, "existing players in room");
-      this.room.state.players.forEach((player: PlayerState, sessionId: string) => {
-        console.log("Existing player in room:", sessionId, player.name, "ready:", player.ready);
+    const registerPlayer = (sessionId: string, player: ReplicatedPlayerState) => {
+      if (!this.playerSprites.has(sessionId)) {
         this.addPlayer(sessionId, player);
-        
-        // Note: Individual player onChange callbacks are not working properly
-        // We'll use periodic sync instead
-      });
-    }
+      }
+      if (!this.trackedPlayerListeners.has(sessionId)) {
+        player.onChange((changes) => {
+          this.syncPlayer(sessionId, player, changes);
+        });
+        this.trackedPlayerListeners.add(sessionId);
+      }
+    };
 
-    // Handle existing pipes (in case they were added before listeners were registered)
-    if (this.room.state.pipes) {
-      console.log("Found", this.room.state.pipes.length, "existing pipes in room");
-      this.room.state.pipes.forEach((pipe: PipeState) => {
-        console.log("Existing pipe in room:", pipe.id, "at x:", pipe.x, "gapY:", pipe.gapY);
-        this.addPipe(pipe);
-      });
-    }
-
-    $(this.room.state.players).onAdd((player: PlayerState, sessionId: string) => {
-      console.log("Player added to room via onAdd:", sessionId, player.name, "ready:", player.ready);
-      this.addPlayer(sessionId, player);
-      
-      // Note: Individual player onChange callbacks are not working properly
-      // We'll use periodic sync instead
+    state.players?.forEach((player, sessionId) => {
+      registerPlayer(sessionId, player);
     });
 
-    $(this.room.state.players).onRemove((_player: PlayerState, sessionId: string) => {
+    $(state.players).onAdd((player: ReplicatedPlayerState, sessionId: string) => {
+      registerPlayer(sessionId, player);
+    });
+
+    $(state.players).onRemove((_player: ReplicatedPlayerState, sessionId: string) => {
       this.removePlayer(sessionId);
     });
 
-    $(this.room.state.pipes).onAdd((pipe: PipeState) => {
-      console.log("Pipe added to room state:", pipe);
-      this.addPipe(pipe);
+    const registerPipe = (pipe: ReplicatedPipeState) => {
+      if (!this.pipeSprites.has(pipe.id)) {
+        this.addPipe(pipe);
+      }
+      if (!this.trackedPipeListeners.has(pipe.id)) {
+        pipe.onChange(() => {
+          this.updatePipe(pipe);
+        });
+        this.trackedPipeListeners.add(pipe.id);
+      }
+    };
+
+    state.pipes?.forEach((pipe) => {
+      registerPipe(pipe);
     });
 
-    $(this.room.state.pipes).onRemove((pipe: PipeState) => {
+    $(state.pipes).onAdd((pipe: ReplicatedPipeState) => {
+      registerPipe(pipe);
+    });
+
+    $(state.pipes).onRemove((pipe: ReplicatedPipeState) => {
       this.removePipe(pipe.id);
     });
 
-    $(this.room.state).onChange((changes: any[]) => {
-      console.log("Room state changed:", changes);
-      if (changes && Array.isArray(changes)) {
-        changes.forEach((change) => {
-          console.log("State change field:", change.field, "value:", change.value);
-          if (change.field === "running" || change.field === "winnerId") {
-            console.log("Updating status message due to running/winnerId change");
-            this.updateStatusMessage();
-          }
-        });
-      } else {
-        console.log("State change callback received non-array data:", changes);
-      }
+    $(state).onChange((changes: Array<{ field: string }>) => {
+      changes.forEach((change) => {
+        if (change.field === "running") {
+          this.lastKnownRunning = state.running;
+          this.updateStatusMessage();
+          this.updateReadyUI();
+          this.refreshScoreboard();
+        }
+
+        if (change.field === "winnerId") {
+          this.updateStatusMessage();
+        }
+      });
     });
 
+    this.lastKnownRunning = state.running;
     this.updateStatusMessage();
+    this.updateReadyUI();
+    this.refreshScoreboard();
   }
 
-  private addPlayer(sessionId: string, player: PlayerState) {
+  private addPlayer(sessionId: string, player: ReplicatedPlayerState) {
     console.log("Adding player:", sessionId, "with ready state:", player.ready);
     
     const sprite = this.add.sprite(this.birdX, player.y, this.getBirdTexture(player.skin));
@@ -574,6 +516,7 @@ export class Game extends Scene {
     }
     this.playerSprites.delete(sessionId);
     this.playerCache.delete(sessionId);
+    this.trackedPlayerListeners.delete(sessionId);
     if (sessionId === this.localPlayerId) {
       this.localPlayerReady = false;
     }
@@ -582,7 +525,11 @@ export class Game extends Scene {
     this.updateReadyUI();
   }
 
-  private syncPlayer(sessionId: string, player: PlayerState, changes: any[]) {
+  private syncPlayer(
+    sessionId: string,
+    player: ReplicatedPlayerState,
+    changes: Array<{ field: string }> | undefined,
+  ) {
     const sprite = this.playerSprites.get(sessionId);
     if (!sprite) {
       return;
@@ -635,7 +582,7 @@ export class Game extends Scene {
     }
   }
 
-  private getBirdTexture(skin: PlayerState["skin"]) {
+  private getBirdTexture(skin: ReplicatedPlayerState["skin"]) {
     switch (skin) {
       case "blue":
         return "bluebird-midflap";
@@ -646,7 +593,7 @@ export class Game extends Scene {
     }
   }
 
-  private getBirdAnimation(skin: PlayerState["skin"]) {
+  private getBirdAnimation(skin: ReplicatedPlayerState["skin"]) {
     switch (skin) {
       case "blue":
         return "blue_fly";
@@ -657,7 +604,7 @@ export class Game extends Scene {
     }
   }
 
-  private addPipe(pipe: PipeState) {
+  private addPipe(pipe: ReplicatedPipeState) {
     console.log("Adding pipe:", pipe.id, "at x:", pipe.x, "gapY:", pipe.gapY);
     
     // Check if pipe texture exists
@@ -705,7 +652,7 @@ export class Game extends Scene {
     console.log("Pipe added successfully, total pipes:", this.pipeSprites.size);
   }
 
-  private updatePipe(pipe: PipeState) {
+  private updatePipe(pipe: ReplicatedPipeState) {
     const sprites = this.pipeSprites.get(pipe.id);
     if (!sprites) {
       return;
@@ -726,6 +673,7 @@ export class Game extends Scene {
     sprites.top.destroy();
     sprites.bottom.destroy();
     this.pipeSprites.delete(id);
+    this.trackedPipeListeners.delete(id);
   }
 
   private refreshScoreboard() {
@@ -735,7 +683,7 @@ export class Game extends Scene {
 
     const players: Array<{ name: string; score: number; alive: boolean; ready: boolean; isLocal: boolean }> = [];
 
-    this.room.state.players.forEach((player: PlayerState, sessionId: string) => {
+    this.room.state.players.forEach((player: ReplicatedPlayerState, sessionId: string) => {
       players.push({
         name: player.name,
         score: player.score,
@@ -799,7 +747,7 @@ export class Game extends Scene {
       }
       
       if (winnerId) {
-        const winner = this.room.state.players.get(winnerId) as PlayerState | undefined;
+        const winner = this.room.state.players.get(winnerId) as ReplicatedPlayerState | undefined;
         const winnerName = winner ? winner.name : "Nobody";
         const isLocalWinner = winnerId === this.localPlayerId;
         this.statusText.setText(`${winnerName} wins!\nPress Ready to play again.`);
@@ -847,7 +795,7 @@ export class Game extends Scene {
     }
 
     let count = 0;
-    this.room.state.players.forEach((player: PlayerState, sessionId: string) => {
+    this.room.state.players.forEach((player: ReplicatedPlayerState, sessionId: string) => {
       if (player.ready) {
         count += 1;
         console.log("Player", sessionId, "is ready");

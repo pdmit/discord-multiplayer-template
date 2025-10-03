@@ -6,22 +6,26 @@ export class GameRoom extends Room<GameState> {
   state = new GameState();
   maxClients = 25; // Current Discord limit is 25
 
-  private gravity = 400; // Reduced gravity for testing
-  private flapVelocity = -550;
-  private pipeSpeed = 220;
-  private pipeInterval = 1800;
-  private pipeGap = 230;
-  private floorHeight = 112;
-  private birdX = 260;
-  private birdHalfWidth = 17;
-  private birdHalfHeight = 12;
-  private pipeWidth = 52;
+  // --- Simulation constants (server-only, not replicated)
+  private readonly gravity = 400; // Reduced gravity for testing
+  private readonly flapVelocity = -550;
+  private readonly pipeSpeed = 220;
+  private readonly pipeInterval = 1800;
+  private readonly pipeGap = 230;
+
+  // --- Shared world dimensions (mirrored on the client via replication)
+  private readonly worldWidth = 1280;
+  private readonly worldHeight = 720;
+  private readonly floorHeight = 112;
+  private readonly birdX = 260;
+  private readonly birdHalfWidth = 17;
+  private readonly birdHalfHeight = 12;
+  private readonly pipeWidth = 52;
+
+  // --- Runtime helpers (reset when a round starts)
   private nextPipeId = 1;
   private elapsedSincePipe = 0;
-  private skins: Array<PlayerState["skin"]> = ["yellow", "blue", "red"];
-
-  private worldWidth = 1280;
-  private worldHeight = 720;
+  private readonly skins: Array<PlayerState["skin"]> = ["yellow", "blue", "red"];
 
   onCreate(): void {
     this.setSimulationInterval((deltaTime) => this.update(deltaTime / 1000));

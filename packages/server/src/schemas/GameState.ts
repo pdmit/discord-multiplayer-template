@@ -1,5 +1,7 @@
 import { Schema, type, MapSchema, ArraySchema } from "@colyseus/schema";
 
+// --- Replicated schema definitions (synced to all connected clients)
+
 export class PlayerState extends Schema {
   @type("string")
   name = "";
@@ -38,6 +40,8 @@ export class PipeState extends Schema {
 }
 
 export class GameState extends Schema {
+  // Players and pipes are replicated collections; clients subscribe to these
+  // to animate the world.
   @type({ map: PlayerState })
   players = new MapSchema<PlayerState>();
 
