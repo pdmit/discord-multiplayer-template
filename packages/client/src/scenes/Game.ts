@@ -32,8 +32,13 @@ export class Game extends Scene {
   private readyCountText!: Phaser.GameObjects.Text;
   private readyButtonBackground?: Phaser.GameObjects.Rectangle;
   private readyButtonLabel?: Phaser.GameObjects.Text;
+  private gameOverScreen?: Phaser.GameObjects.Container;
+  private gameOverText?: Phaser.GameObjects.Text;
+  private restartButton?: Phaser.GameObjects.Rectangle;
+  private restartButtonLabel?: Phaser.GameObjects.Text;
   private localPlayerId = "";
   private localPlayerReady = false;
+  private lastKnownRunning = false;
   private readonly pipeGap = 230;
   private readonly birdX = 260;
   private readonly scrollSpeed = 220;
@@ -45,18 +50,85 @@ export class Game extends Scene {
   }
 
   async create() {
+    console.log("Game scene create() called");
+    
+    // Add a visible debug indicator at the top
+    this.add.text(50, 50, "GAME SCENE LOADED", {
+      fontFamily: "Arial Black",
+      fontSize: 24,
+      color: "#ff0000",
+      stroke: "#000000",
+      strokeThickness: 4,
+    }).setDepth(100);
+    
     this.setupWorld();
     this.setupUI();
     this.setupInput();
 
     await this.connect();
     this.registerStateListeners();
+    // Wait a moment for the room state to be fully initialized
+    setTimeout(() => {
+      this.updateReadyUI();
+    }, 100);
+    console.log("Game scene create() completed");
   }
 
   update(_time: number, delta: number) {
     const scroll = (this.scrollSpeed * delta) / 1000;
     this.background.tilePositionX += scroll;
     this.ground.tilePositionX += scroll;
+    
+    // Periodic sync for ready state changes and running state
+    if (this.room && this.room.state && this.room.state.players) {
+      let needsUIUpdate = false;
+      
+      // Check if running state changed
+      const currentRunning = this.room.state.running as boolean;
+      if (currentRunning !== this.lastKnownRunning) {
+        console.log("Running state changed from", this.lastKnownRunning, "to", currentRunning);
+        this.lastKnownRunning = currentRunning;
+        needsUIUpdate = true;
+        this.updateStatusMessage();
+        
+        // When game starts, check for existing pipes
+        if (currentRunning && this.room.state.pipes) {
+          console.log("Game started, checking for pipes:", this.room.state.pipes.length);
+          this.room.state.pipes.forEach((pipe: PipeState) => {
+            console.log("Pipe in room state:", pipe.id, "at x:", pipe.x, "gapY:", pipe.gapY);
+            if (!this.pipeSprites.has(pipe.id)) {
+              console.log("Adding missing pipe:", pipe.id);
+              this.addPipe(pipe);
+            } else {
+              console.log("Pipe already exists:", pipe.id);
+            }
+          });
+        }
+      }
+      
+      this.room.state.players.forEach((player: PlayerState, sessionId: string) => {
+        const cached = this.playerCache.get(sessionId);
+        if (cached && cached.ready !== player.ready) {
+          console.log("Ready state changed for player:", sessionId, "from", cached.ready, "to", player.ready);
+          this.syncPlayer(sessionId, player, []);
+          needsUIUpdate = true;
+        } else if (!cached) {
+          // If player is not in cache, add them
+          console.log("Player not in cache, adding:", sessionId);
+          this.addPlayer(sessionId, player);
+          needsUIUpdate = true;
+        }
+        // Debug: log current ready state
+        if (sessionId === this.localPlayerId) {
+          console.log("Local player ready state - cached:", cached?.ready, "room:", player.ready);
+        }
+      });
+      
+      // Force UI update if any state changed
+      if (needsUIUpdate) {
+        this.updateReadyUI();
+      }
+    }
   }
 
   private setupWorld() {
@@ -100,7 +172,7 @@ export class Game extends Scene {
       .setDepth(11);
 
     this.readyCountText = this.add
-      .text(width / 2, 170, "", {
+      .text(width / 2, height - 250, "DEBUG: Ready count text created", {
         fontFamily: "Arial",
         fontSize: 22,
         color: "#ffffff",
@@ -111,7 +183,7 @@ export class Game extends Scene {
       .setOrigin(0.5)
       .setDepth(11);
 
-    const buttonY = height - 120;
+    const buttonY = height - 200; // Move button higher up
     const buttonWidth = Math.min(320, width * 0.5);
     const buttonHeight = 64;
 
@@ -119,7 +191,7 @@ export class Game extends Scene {
       .rectangle(width / 2, buttonY, buttonWidth, buttonHeight, 0x3498db, 0.85)
       .setOrigin(0.5)
       .setDepth(10)
-      .setVisible(false);
+      .setVisible(true); // Temporarily make visible for debugging
 
     this.readyButtonLabel = this.add
       .text(width / 2, buttonY, "Ready Up", {
@@ -132,7 +204,13 @@ export class Game extends Scene {
       })
       .setOrigin(0.5)
       .setDepth(11)
-      .setVisible(false);
+      .setVisible(true); // Temporarily make visible for debugging
+
+    console.log("Ready button elements created:", {
+      background: !!this.readyButtonBackground,
+      label: !!this.readyButtonLabel,
+      countText: !!this.readyCountText
+    });
 
     this.readyButtonBackground
       .setInteractive({ useHandCursor: true })
@@ -162,6 +240,73 @@ export class Game extends Scene {
       .setDepth(11);
 
     this.updateReadyUI();
+    this.setupGameOverScreen();
+  }
+
+  private setupGameOverScreen() {
+    const width = Number(this.game.config.width);
+    const height = Number(this.game.config.height);
+
+    // Create container for game over screen
+    this.gameOverScreen = this.add.container(width / 2, height / 2);
+    this.gameOverScreen.setVisible(false);
+    this.gameOverScreen.setDepth(20);
+
+    // Semi-transparent background
+    const overlay = this.add.rectangle(0, 0, width, height, 0x000000, 0.7);
+    this.gameOverScreen.add(overlay);
+
+    // Game over text
+    this.gameOverText = this.add.text(0, -50, "GAME OVER", {
+      fontFamily: "Arial Black",
+      fontSize: 48,
+      color: "#ff0000",
+      stroke: "#000000",
+      strokeThickness: 8,
+      align: "center",
+    });
+    this.gameOverText.setOrigin(0.5);
+    this.gameOverScreen.add(this.gameOverText);
+
+    // Score display
+    const scoreDisplay = this.add.text(0, 0, "Score: 0", {
+      fontFamily: "Arial",
+      fontSize: 32,
+      color: "#ffffff",
+      stroke: "#000000",
+      strokeThickness: 6,
+      align: "center",
+    });
+    scoreDisplay.setOrigin(0.5);
+    this.gameOverScreen.add(scoreDisplay);
+
+    // Restart button
+    const buttonWidth = 200;
+    const buttonHeight = 60;
+    const buttonY = 80;
+
+    this.restartButton = this.add.rectangle(0, buttonY, buttonWidth, buttonHeight, 0x27ae60, 0.9);
+    this.restartButton.setOrigin(0.5);
+    this.restartButton.setInteractive({ useHandCursor: true });
+    this.restartButton.on("pointerdown", () => this.restartGame());
+    this.restartButton.on("pointerover", () => {
+      this.restartButton?.setFillStyle(0x2ecc71, 0.95);
+    });
+    this.restartButton.on("pointerout", () => {
+      this.restartButton?.setFillStyle(0x27ae60, 0.9);
+    });
+    this.gameOverScreen.add(this.restartButton);
+
+    this.restartButtonLabel = this.add.text(0, buttonY, "Play Again", {
+      fontFamily: "Arial Black",
+      fontSize: 24,
+      color: "#ffffff",
+      stroke: "#000000",
+      strokeThickness: 4,
+      align: "center",
+    });
+    this.restartButtonLabel.setOrigin(0.5);
+    this.gameOverScreen.add(this.restartButtonLabel);
   }
 
   private setupInput() {
@@ -179,6 +324,44 @@ export class Game extends Scene {
     this.sound.play("wing", { volume: 0.4 });
   }
 
+  private showGameOverScreen(won: boolean, score: number) {
+    if (!this.gameOverScreen || !this.gameOverText) {
+      return;
+    }
+
+    // Update game over text
+    this.gameOverText.setText(won ? "YOU WIN!" : "GAME OVER");
+    this.gameOverText.setColor(won ? "#00ff00" : "#ff0000");
+
+    // Update score display
+    const scoreDisplay = this.gameOverScreen.list[1] as Phaser.GameObjects.Text;
+    if (scoreDisplay) {
+      scoreDisplay.setText(`Score: ${score}`);
+    }
+
+    // Show the screen
+    this.gameOverScreen.setVisible(true);
+    
+    console.log(`Game over screen shown - Won: ${won}, Score: ${score}`);
+  }
+
+  private restartGame() {
+    if (!this.room) {
+      return;
+    }
+
+    // Hide game over screen
+    this.gameOverScreen?.setVisible(false);
+    
+    // Reset local ready state
+    this.localPlayerReady = false;
+    
+    // Send ready up message to start new game
+    this.room.send("setReady", { ready: true });
+    
+    console.log("Restarting game...");
+  }
+
   private toggleReady() {
     if (!this.room || this.room.state.running) {
       return;
@@ -186,8 +369,21 @@ export class Game extends Scene {
 
     const nextReady = !this.localPlayerReady;
     this.localPlayerReady = nextReady;
+    console.log("Toggling ready state to:", nextReady);
+    
+    // Update UI immediately for better responsiveness
     this.updateReadyUI();
+    
+    // Send to server
     this.room.send("setReady", { ready: nextReady });
+    console.log("Sent setReady message to server");
+    
+    // Also update the server state immediately to avoid sync issues
+    const player = this.room.state.players.get(this.localPlayerId);
+    if (player) {
+      player.ready = nextReady;
+      console.log("Updated server state immediately for player:", this.localPlayerId, "to:", nextReady);
+    }
   }
 
   private updateReadyButtonStyle() {
@@ -201,11 +397,15 @@ export class Game extends Scene {
   }
 
   private updateReadyUI() {
+    console.log("updateReadyUI called");
+    
     if (!this.readyButtonBackground || !this.readyButtonLabel || !this.readyCountText) {
+      console.log("Ready UI elements not initialized");
       return;
     }
 
     if (!this.room) {
+      console.log("No room, hiding ready UI");
       this.readyButtonBackground.setVisible(false);
       this.readyButtonBackground.disableInteractive();
       this.readyButtonLabel.setVisible(false);
@@ -217,10 +417,23 @@ export class Game extends Scene {
     const playerCount = this.getPlayerCount();
     const readyCount = this.getReadyCount();
     const showLobbyUi = !running && playerCount > 0;
+    
+    console.log("Ready UI state:", { 
+      running, 
+      playerCount, 
+      readyCount, 
+      showLobbyUi, 
+      localPlayerReady: this.localPlayerReady,
+      localPlayerId: this.localPlayerId,
+      pipesCount: this.room.state.pipes?.length || 0,
+      playerSpritesCount: this.playerSprites.size
+    });
 
+    // Always update the ready count text when visible
     this.readyCountText.setVisible(showLobbyUi);
     if (showLobbyUi) {
       this.readyCountText.setText(`Ready players: ${readyCount} / ${playerCount}`);
+      console.log("Updated ready count display:", `${readyCount} / ${playerCount}`);
     } else {
       this.readyCountText.setText("");
     }
@@ -232,6 +445,7 @@ export class Game extends Scene {
       this.readyButtonLabel.setText(this.localPlayerReady ? "Cancel Ready" : "Ready Up");
       this.updateReadyButtonStyle();
       this.readyButtonBackground.setInteractive({ useHandCursor: true });
+      console.log("Updated ready button text to:", this.localPlayerReady ? "Cancel Ready" : "Ready Up");
     } else {
       this.readyButtonBackground.disableInteractive();
     }
@@ -250,6 +464,7 @@ export class Game extends Scene {
         name: getUserName(),
       });
       this.localPlayerId = this.room.sessionId;
+      console.log("Connected to room, sessionId:", this.localPlayerId);
       void this.updateDiscordActivityPresence();
     } catch (e) {
       console.log(`Could not connect with the server: ${e}`);
@@ -258,17 +473,39 @@ export class Game extends Scene {
   }
 
   private registerStateListeners() {
-    if (!this.room) {
+    if (!this.room || !this.room.state) {
       return;
     }
 
     const $ = getStateCallbacks(this.room);
 
-    $(this.room.state.players).onAdd((player: PlayerState, sessionId: string) => {
-      this.addPlayer(sessionId, player);
-      $(player).onChange((changes: any) => {
-        this.syncPlayer(sessionId, player, changes);
+    // Handle existing players (in case they were added before listeners were registered)
+    if (this.room.state.players) {
+      console.log("Found", this.room.state.players.size, "existing players in room");
+      this.room.state.players.forEach((player: PlayerState, sessionId: string) => {
+        console.log("Existing player in room:", sessionId, player.name, "ready:", player.ready);
+        this.addPlayer(sessionId, player);
+        
+        // Note: Individual player onChange callbacks are not working properly
+        // We'll use periodic sync instead
       });
+    }
+
+    // Handle existing pipes (in case they were added before listeners were registered)
+    if (this.room.state.pipes) {
+      console.log("Found", this.room.state.pipes.length, "existing pipes in room");
+      this.room.state.pipes.forEach((pipe: PipeState) => {
+        console.log("Existing pipe in room:", pipe.id, "at x:", pipe.x, "gapY:", pipe.gapY);
+        this.addPipe(pipe);
+      });
+    }
+
+    $(this.room.state.players).onAdd((player: PlayerState, sessionId: string) => {
+      console.log("Player added to room via onAdd:", sessionId, player.name, "ready:", player.ready);
+      this.addPlayer(sessionId, player);
+      
+      // Note: Individual player onChange callbacks are not working properly
+      // We'll use periodic sync instead
     });
 
     $(this.room.state.players).onRemove((_player: PlayerState, sessionId: string) => {
@@ -276,10 +513,8 @@ export class Game extends Scene {
     });
 
     $(this.room.state.pipes).onAdd((pipe: PipeState) => {
+      console.log("Pipe added to room state:", pipe);
       this.addPipe(pipe);
-      $(pipe).onChange(() => {
-        this.updatePipe(pipe);
-      });
     });
 
     $(this.room.state.pipes).onRemove((pipe: PipeState) => {
@@ -287,17 +522,26 @@ export class Game extends Scene {
     });
 
     $(this.room.state).onChange((changes: any[]) => {
-      changes.forEach((change) => {
-        if (change.field === "running" || change.field === "winnerId") {
-          this.updateStatusMessage();
-        }
-      });
+      console.log("Room state changed:", changes);
+      if (changes && Array.isArray(changes)) {
+        changes.forEach((change) => {
+          console.log("State change field:", change.field, "value:", change.value);
+          if (change.field === "running" || change.field === "winnerId") {
+            console.log("Updating status message due to running/winnerId change");
+            this.updateStatusMessage();
+          }
+        });
+      } else {
+        console.log("State change callback received non-array data:", changes);
+      }
     });
 
     this.updateStatusMessage();
   }
 
   private addPlayer(sessionId: string, player: PlayerState) {
+    console.log("Adding player:", sessionId, "with ready state:", player.ready);
+    
     const sprite = this.add.sprite(this.birdX, player.y, this.getBirdTexture(player.skin));
     sprite.setDepth(5);
     sprite.play(this.getBirdAnimation(player.skin));
@@ -309,13 +553,18 @@ export class Game extends Scene {
 
     this.playerSprites.set(sessionId, sprite);
     this.playerCache.set(sessionId, { alive: player.alive, score: player.score, ready: player.ready });
+    
     if (sessionId === this.localPlayerId) {
       this.localPlayerReady = player.ready;
+      console.log("Set local player ready state to:", player.ready);
     }
+    
     this.syncPlayer(sessionId, player, []);
     this.refreshScoreboard();
     this.updateStatusMessage();
     this.updateReadyUI();
+    
+    console.log("Player added successfully. Cache now has:", this.playerCache.size, "players");
   }
 
   private removePlayer(sessionId: string) {
@@ -369,6 +618,7 @@ export class Game extends Scene {
     this.playerCache.set(sessionId, { alive: player.alive, score: player.score, ready: player.ready });
     if (sessionId === this.localPlayerId) {
       this.localPlayerReady = player.ready;
+      console.log("Updated local player ready state to:", player.ready);
     }
 
     const changeList = Array.isArray(changes) ? changes : [];
@@ -380,6 +630,7 @@ export class Game extends Scene {
       this.updateStatusMessage();
     }
     if (readyChanged) {
+      console.log("Ready state changed for player:", sessionId, "to:", player.ready);
       this.updateReadyUI();
     }
   }
@@ -407,17 +658,51 @@ export class Game extends Scene {
   }
 
   private addPipe(pipe: PipeState) {
+    console.log("Adding pipe:", pipe.id, "at x:", pipe.x, "gapY:", pipe.gapY);
+    
+    // Check if pipe texture exists
+    if (!this.textures.exists("pipe")) {
+      console.error("Pipe texture not found! Available textures:", Object.keys(this.textures.list));
+      console.log("Trying to use 'pipe-green' instead...");
+      
+      // Try using pipe-green texture instead
+      if (!this.textures.exists("pipe-green")) {
+        console.error("pipe-green texture also not found! Available textures:", Object.keys(this.textures.list));
+        return;
+      }
+      
+      // Use pipe-green texture
+      const top = this.add.image(pipe.x, pipe.gapY - this.pipeGap / 2, "pipe-green");
+      top.setOrigin(0.5, 1);
+      top.setFlipY(true);
+      top.setDepth(3);
+      console.log("Created top pipe (pipe-green) at:", pipe.x, pipe.gapY - this.pipeGap / 2);
+
+      const bottom = this.add.image(pipe.x, pipe.gapY + this.pipeGap / 2, "pipe-green");
+      bottom.setOrigin(0.5, 0);
+      bottom.setDepth(3);
+      console.log("Created bottom pipe (pipe-green) at:", pipe.x, pipe.gapY + this.pipeGap / 2);
+      
+      this.pipeSprites.set(pipe.id, { top, bottom });
+      this.updatePipe(pipe);
+      console.log("Pipe added successfully with pipe-green texture, total pipes:", this.pipeSprites.size);
+      return;
+    }
+    
     const top = this.add.image(pipe.x, pipe.gapY - this.pipeGap / 2, "pipe");
     top.setOrigin(0.5, 1);
     top.setFlipY(true);
     top.setDepth(3);
+    console.log("Created top pipe at:", pipe.x, pipe.gapY - this.pipeGap / 2);
 
     const bottom = this.add.image(pipe.x, pipe.gapY + this.pipeGap / 2, "pipe");
     bottom.setOrigin(0.5, 0);
     bottom.setDepth(3);
+    console.log("Created bottom pipe at:", pipe.x, pipe.gapY + this.pipeGap / 2);
 
     this.pipeSprites.set(pipe.id, { top, bottom });
     this.updatePipe(pipe);
+    console.log("Pipe added successfully, total pipes:", this.pipeSprites.size);
   }
 
   private updatePipe(pipe: PipeState) {
@@ -498,14 +783,31 @@ export class Game extends Scene {
 
     const running = this.room.state.running;
     const winnerId = this.room.state.winnerId as string;
+    const playerCount = this.getPlayerCount();
 
     if (!running) {
-      const playerCount = this.getPlayerCount();
       const readyCount = this.getReadyCount();
+      
+      // Check if it's a single player game over (no winner, but game ended)
+      if (!winnerId && playerCount === 1) {
+        const localPlayer = this.room.state.players.get(this.localPlayerId);
+        if (localPlayer && !localPlayer.alive) {
+          // Single player died - show game over screen
+          this.showGameOverScreen(false, localPlayer.score);
+          return;
+        }
+      }
+      
       if (winnerId) {
         const winner = this.room.state.players.get(winnerId) as PlayerState | undefined;
         const winnerName = winner ? winner.name : "Nobody";
+        const isLocalWinner = winnerId === this.localPlayerId;
         this.statusText.setText(`${winnerName} wins!\nPress Ready to play again.`);
+        
+        // Show game over screen for local player
+        if (isLocalWinner) {
+          this.showGameOverScreen(true, winner?.score || 0);
+        }
       } else if (playerCount > 0) {
         const everyoneReady = readyCount > 0 && readyCount === playerCount;
         if (everyoneReady) {
@@ -517,14 +819,18 @@ export class Game extends Scene {
         this.statusText.setText("Waiting for players to join...");
       }
     } else {
-      this.statusText.setText("Flap to stay alive! Last bird standing wins.");
+      if (playerCount === 1) {
+        this.statusText.setText("Flap to stay alive! Try to get a high score!");
+      } else {
+        this.statusText.setText("Flap to stay alive! Last bird standing wins.");
+      }
     }
     this.updateReadyUI();
     void this.updateDiscordActivityPresence();
   }
 
   private getPlayerCount() {
-    if (!this.room) {
+    if (!this.room || !this.room.state || !this.room.state.players) {
       return 0;
     }
 
@@ -536,21 +842,23 @@ export class Game extends Scene {
   }
 
   private getReadyCount() {
-    if (!this.room) {
+    if (!this.room || !this.room.state || !this.room.state.players) {
       return 0;
     }
 
     let count = 0;
-    this.room.state.players.forEach((player: PlayerState) => {
+    this.room.state.players.forEach((player: PlayerState, sessionId: string) => {
       if (player.ready) {
         count += 1;
+        console.log("Player", sessionId, "is ready");
       }
     });
+    console.log("Total ready count:", count);
     return count;
   }
 
   private async updateDiscordActivityPresence() {
-    if (!this.room || !discordSdk) {
+    if (!this.room || !this.room.state || !discordSdk) {
       return;
     }
 
@@ -562,7 +870,7 @@ export class Game extends Scene {
     this.updatingActivity = true;
 
     const playerCount = this.getPlayerCount();
-    const maxPlayers = this.room.maxClients ?? 25;
+    const maxPlayers = 25; // Default max players
     const running = this.room.state.running as boolean;
 
     try {
