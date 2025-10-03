@@ -48,6 +48,7 @@ export class Preloader extends Scene {
     this.load.image("background-day", "background-day.png");
     this.load.image("background-night", "background-night.png");
     this.load.image("pipe", "pipe-green.png");
+    this.load.image("pipe-red", "pipe-red.png");
     this.load.image("base", "base.png");
     this.load.image("message", "message.png");
     this.load.image("gameover", "gameover.png");

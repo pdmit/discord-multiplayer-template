@@ -39,7 +39,8 @@ export class Game extends Scene {
   private localPlayerId = "";
   private localPlayerReady = false;
   private lastKnownRunning = false;
-  private readonly pipeGap = 230;
+  private readonly pipeGap = 50;
+  private readonly pipeHeight = 315;
   private readonly birdX = 260;
   private readonly scrollSpeed = 220;
   private updatingActivity = false;
@@ -479,6 +480,7 @@ export class Game extends Scene {
 
   private registerStateListeners() {
     if (!this.room || !this.room.state) {
+      console.log("No room or state, skipping state listeners");
       return;
     }
 
@@ -697,15 +699,18 @@ export class Game extends Scene {
       return;
     }
     
-    const top = this.add.image(pipe.x, pipe.gapY - this.pipeGap / 2, "pipe");
-    top.setOrigin(0.5, 1);
+    pipe.x = 1000;
+    pipe.gapY = 20;
+    const top = this.add.image(pipe.x, 0, "pipe");
+    top.setOrigin(0.5, 0);
     top.setFlipY(true);
     top.setDepth(3);
     console.log("Created top pipe at:", pipe.x, pipe.gapY - this.pipeGap / 2);
 
-    const bottom = this.add.image(pipe.x, pipe.gapY + this.pipeGap / 2, "pipe");
+    const bottom = this.add.image(pipe.x, this.pipeHeight, "pipe-red");
     bottom.setOrigin(0.5, 0);
-    bottom.setDepth(3);
+    bottom.setFlipY(false);
+    bottom.setDepth(4);
     console.log("Created bottom pipe at:", pipe.x, pipe.gapY + this.pipeGap / 2);
 
     this.pipeSprites.set(pipe.id, { top, bottom });
@@ -720,9 +725,9 @@ export class Game extends Scene {
     }
 
     sprites.top.x = pipe.x;
-    sprites.bottom.x = pipe.x;
+    //sprites.bottom.x = pipe.x;
     sprites.top.y = pipe.gapY - this.pipeGap / 2;
-    sprites.bottom.y = pipe.gapY + this.pipeGap / 2;
+    //sprites.bottom.y = pipe.gapY + this.pipeGap / 2;
   }
 
   private removePipe(id: number) {
