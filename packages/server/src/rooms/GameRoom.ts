@@ -6,8 +6,8 @@ export class GameRoom extends Room<GameState> {
   state = new GameState();
   maxClients = 25; // Current Discord limit is 25
 
-  private gravity = 400; // Reduced gravity for testing
-  private flapVelocity = -550;
+  private gravity = 800; // Reduced gravity for testing
+  private flapVelocity = -250;
   private pipeSpeed = 220;
   private pipeInterval = 1800;
   private pipeGap = 230;
@@ -35,7 +35,7 @@ export class GameRoom extends Room<GameState> {
       if (!this.state.running || !player.alive) {
         return;
       }
-
+      console.log("flap message received");
       player.velocity = this.flapVelocity;
     });
 

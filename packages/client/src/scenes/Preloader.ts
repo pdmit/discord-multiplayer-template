@@ -7,7 +7,7 @@ export class Preloader extends Scene {
 
   init() {
     const bg = this.add
-      .image(this.cameras.main.width / 2, this.cameras.main.height / 2, "background-day")
+      .image(this.cameras.main.width / 2, this.cameras.main.height / 2, "background-night")
       .setOrigin(0.5, 0.5);
     const scale = Math.max(
       this.cameras.main.width / bg.width,

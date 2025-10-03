@@ -50,7 +50,6 @@ export class Game extends Scene {
   }
 
   async create() {
-    console.log("Game scene create() called");
     
     // Add a visible debug indicator at the top
     this.add.text(50, 50, "GAME SCENE LOADED", {
@@ -119,15 +118,18 @@ export class Game extends Scene {
           needsUIUpdate = true;
         }
         // Debug: log current ready state
-        if (sessionId === this.localPlayerId) {
-          console.log("Local player ready state - cached:", cached?.ready, "room:", player.ready);
-        }
+        // if (sessionId === this.localPlayerId) {
+        //   console.log("Local player ready state - cached:", cached?.ready, "room:", player.ready);
+        // }
+
+        this.syncPlayer(sessionId, player, []);
       });
       
       // Force UI update if any state changed
       if (needsUIUpdate) {
         this.updateReadyUI();
       }
+
     }
   }
 
@@ -310,6 +312,7 @@ export class Game extends Scene {
   }
 
   private setupInput() {
+    console.log("setupInput() called");
     this.input.on("pointerdown", () => this.handleFlap());
     this.input.keyboard?.on("keydown-SPACE", () => this.handleFlap());
     this.input.keyboard?.on("keydown-UP", () => this.handleFlap());
@@ -317,9 +320,11 @@ export class Game extends Scene {
 
   private handleFlap() {
     if (!this.room || !this.room.state.running) {
+      console.log("handleFlap() called but room or running state is false");
       return;
     }
 
+    console.log("handleFlap() called");
     this.room.send("flap");
     this.sound.play("wing", { volume: 0.4 });
   }
@@ -477,6 +482,7 @@ export class Game extends Scene {
       return;
     }
 
+    console.log("Registering state listeners");
     const $ = getStateCallbacks(this.room);
 
     // Handle existing players (in case they were added before listeners were registered)
@@ -518,6 +524,7 @@ export class Game extends Scene {
     });
 
     $(this.room.state.pipes).onRemove((pipe: PipeState) => {
+      console.log("Pipe removed from room state:", pipe);
       this.removePipe(pipe.id);
     });
 
@@ -589,6 +596,7 @@ export class Game extends Scene {
     }
 
     sprite.y = player.y;
+    //console.log("sprite.y set to:", player.y);
     const rotation = Phaser.Math.Clamp(player.velocity / 600, -0.6, 1.0);
     sprite.setRotation(rotation);
 
@@ -618,7 +626,7 @@ export class Game extends Scene {
     this.playerCache.set(sessionId, { alive: player.alive, score: player.score, ready: player.ready });
     if (sessionId === this.localPlayerId) {
       this.localPlayerReady = player.ready;
-      console.log("Updated local player ready state to:", player.ready);
+      //console.log("Updated local player ready state to:", player.ready);
     }
 
     const changeList = Array.isArray(changes) ? changes : [];
@@ -672,13 +680,13 @@ export class Game extends Scene {
       }
       
       // Use pipe-green texture
-      const top = this.add.image(pipe.x, pipe.gapY - this.pipeGap / 2, "pipe-green");
+      const top = this.add.image(pipe.x, pipe.gapY - this.pipeGap / 2, "pipe");
       top.setOrigin(0.5, 1);
       top.setFlipY(true);
       top.setDepth(3);
       console.log("Created top pipe (pipe-green) at:", pipe.x, pipe.gapY - this.pipeGap / 2);
 
-      const bottom = this.add.image(pipe.x, pipe.gapY + this.pipeGap / 2, "pipe-green");
+      const bottom = this.add.image(pipe.x, pipe.gapY + this.pipeGap / 2, "pipe");
       bottom.setOrigin(0.5, 0);
       bottom.setDepth(3);
       console.log("Created bottom pipe (pipe-green) at:", pipe.x, pipe.gapY + this.pipeGap / 2);
@@ -723,9 +731,9 @@ export class Game extends Scene {
       return;
     }
 
-    sprites.top.destroy();
-    sprites.bottom.destroy();
-    this.pipeSprites.delete(id);
+    //sprites.top.destroy();
+    //sprites.bottom.destroy();
+    //this.pipeSprites.delete(id);
   }
 
   private refreshScoreboard() {
