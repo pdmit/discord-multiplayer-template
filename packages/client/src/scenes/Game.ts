@@ -67,15 +67,6 @@ export class Game extends Scene {
     this.setupInput();
 
     await this.connect();
-
-    if (this.room) {
-      try {
-        await this.room.waitForState();
-      } catch (error) {
-        console.error("Error while waiting for initial room state", error);
-      }
-    }
-
     this.registerStateListeners();
     // Wait a moment for the room state to be fully initialized
     setTimeout(() => {
@@ -501,6 +492,10 @@ export class Game extends Scene {
       return;
     }
 
+    if (!this.room.state.pipes) {
+      console.log("No pipes when registering state listerners")
+    }
+
     console.log("Registering state listeners");
     const $ = getStateCallbacks(this.room);
 
@@ -537,25 +532,24 @@ export class Game extends Scene {
       this.removePlayer(sessionId);
     });
 
-    if (Array.isArray(this.room.state.pipes)) {
-      (this.room.state.pipes as PipeState[]).forEach((pipe: PipeState) => {
+    // Hydrate existing pipes
+    if (this.room.state.pipes instanceof Array) {
+      (this.room.state.pipes as any[]).forEach((pipe: PipeState) => {
         console.log("Hydrate pipe:", pipe);
         this.addPipe(pipe);
       });
-
-      const pipeCallbacks = $(this.room.state.pipes);
-      pipeCallbacks.onAdd((pipe: PipeState) => {
-        console.log("Pipe added to room state:", pipe);
-        this.addPipe(pipe);
-      });
-
-      pipeCallbacks.onRemove((pipe: PipeState) => {
-        console.log("Pipe removed from room state:", pipe);
-        this.removePipe(pipe.id);
-      });
-    } else {
-      console.warn("Pipes collection missing when registering listeners");
     }
+
+    // Subscribe for additions of pipes
+    $(this.room.state.pipes).onAdd((pipe: PipeState) => {
+      console.log("Pipe added to room state:", pipe);
+      this.addPipe(pipe);
+    });
+
+    $(this.room.state.pipes).onRemove((pipe: PipeState) => {
+      console.log("Pipe removed from room state:", pipe);
+      this.removePipe(pipe.id);
+    });
 
     $(this.room.state).onChange((changes: any[]) => {
       console.log("Room state changed:", changes);
