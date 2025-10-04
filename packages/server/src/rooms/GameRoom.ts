@@ -10,11 +10,12 @@ export class GameRoom extends Room<GameState> {
   private flapVelocity = -250;
   private pipeSpeed = 220;
   private pipeInterval = 1800;
-  private pipeGap = 0;
+  private pipeGap = 300;
   private floorHeight = 112;
   private birdX = 260;
   private birdHalfWidth = 17;
   private birdHalfHeight = 12;
+  private readonly pipeHeight = 315;
   private pipeWidth = 52;
   private nextPipeId = 1;
   private elapsedSincePipe = 0;
@@ -159,10 +160,12 @@ export class GameRoom extends Room<GameState> {
     pipe.id = this.nextPipeId++;
     pipe.x = startX ?? this.worldWidth + 200;
 
+    const pipegap = Math.max((Math.random() * 300), 100); 
+
     const minY = 180;
-    const maxY = this.worldHeight - this.floorHeight - 180;
-    pipe.Ybottom = minY + Math.random() * Math.max(0, maxY - minY);
-    pipe.Ytop = pipe.Ybottom - this.pipeGap;
+    const maxY = this.worldHeight - this.floorHeight - minY;
+    pipe.Ybottom =  maxY + (Math.random() * Math.max(0, maxY - minY));
+    pipe.Ytop = pipe.Ybottom - pipegap - this.pipeHeight;
 
     this.state.pipes.push(pipe);
     logger.info(`Pipe created: id=${pipe.id}, x=${pipe.x}, Ytop=${pipe.Ytop}, Ybottom=${pipe.Ybottom}, total pipes=${this.state.pipes.length}`);
@@ -228,6 +231,9 @@ export class GameRoom extends Room<GameState> {
 
     for (const pipe of this.state.pipes) {
       pipe.x -= this.pipeSpeed * delta;
+      // if (pipe.id == 1) {
+      //   console.log(pipe.x);
+      // }
     }
 
     while (this.state.pipes.length > 0 && this.state.pipes[0].x < -this.pipeWidth) {

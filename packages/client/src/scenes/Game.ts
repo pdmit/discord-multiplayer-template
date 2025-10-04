@@ -100,11 +100,18 @@ export class Game extends Scene {
             if (!this.pipeSprites.has(pipe.id)) {
               console.log("Adding missing pipe:", pipe.id);
               this.addPipe(pipe);
+              
             } else {
               console.log("Pipe already exists:", pipe.id);
             }
           });
         }
+      }
+
+      if (currentRunning && this.room.state.pipes) {
+        this.room.state.pipes.forEach((pipe: PipeState) => {
+          this.updatePipe(pipe);
+        });
       }
       
       this.room.state.players.forEach((player: PlayerState, sessionId: string) => {
@@ -485,6 +492,10 @@ export class Game extends Scene {
       return;
     }
 
+    if (!this.room.state.pipes) {
+      console.log("No pipes when registering state listerners")
+    }
+
     console.log("Registering state listeners");
     const $ = getStateCallbacks(this.room);
 
@@ -521,6 +532,15 @@ export class Game extends Scene {
       this.removePlayer(sessionId);
     });
 
+    // Hydrate existing pipes
+    if (this.room.state.pipes instanceof Array) {
+      (this.room.state.pipes as any[]).forEach((pipe: PipeState) => {
+        console.log("Hydrate pipe:", pipe);
+        this.addPipe(pipe);
+      });
+    }
+
+    // Subscribe for additions of pipes
     $(this.room.state.pipes).onAdd((pipe: PipeState) => {
       console.log("Pipe added to room state:", pipe);
       this.addPipe(pipe);
@@ -670,49 +690,18 @@ export class Game extends Scene {
 
   private addPipe(pipe: PipeState) {
     console.log("Adding pipe:", pipe.id, "at x:", pipe.x, "Ytop:", pipe.Ytop);
-    
-    // Check if pipe texture exists
-    if (!this.textures.exists("pipe")) {
-      console.error("Pipe texture not found! Available textures:", Object.keys(this.textures.list));
-      console.log("Trying to use 'pipe-green' instead...");
-      
-      // Try using pipe-green texture instead
-      if (!this.textures.exists("pipe-green")) {
-        console.error("pipe-green texture also not found! Available textures:", Object.keys(this.textures.list));
-        return;
-      }
-      
-      // Use pipe-green texture
-      const top = this.add.image(pipe.x, pipe.Ytop - this.pipeGap / 2, "pipe");
-      top.setOrigin(0.5, 1);
-      top.setFlipY(true);
-      top.setDepth(3);
-      console.log("Created top pipe (pipe-green) at:", pipe.x, pipe.Ytop - this.pipeGap / 2);
 
-      const bottom = this.add.image(pipe.x, pipe.Ytop + this.pipeGap / 2, "pipe");
-      bottom.setOrigin(0.5, 0);
-      bottom.setDepth(3);
-      console.log("Created bottom pipe (pipe-green) at:", pipe.x, pipe.Ytop + this.pipeGap / 2);
-      
-      this.pipeSprites.set(pipe.id, { top, bottom });
-      this.updatePipe(pipe);
-      console.log("Pipe added successfully with pipe-green texture, total pipes:", this.pipeSprites.size);
-      return;
-    }
-    
-    pipe.x = 1000;
-    pipe.Ytop = 20;
-    const top = this.add.image(pipe.x, 0, "pipe");
+    const top = this.add.image(pipe.x, pipe.Ytop, "pipe");
     top.setOrigin(0.5, 0);
     top.setFlipY(true);
     top.setDepth(3);
-    console.log("Created top pipe at:", pipe.x, pipe.Ytop - this.pipeGap / 2);
+    console.log("Created top pipe at:", pipe.x, pipe.Ytop);
 
-    const bottom = this.add.image(pipe.x, this.pipeHeight, "pipe-red");
+    const bottom = this.add.image(pipe.x, pipe.Ybottom, "pipe-red");
     bottom.setOrigin(0.5, 0);
     bottom.setFlipY(false);
     bottom.setDepth(4);
-    console.log("Created bottom pipe at:", pipe.x, pipe.Ytop + this.pipeGap / 2);
+    console.log("Created bottom pipe at:", pipe.x, pipe.Ybottom);
 
     this.pipeSprites.set(pipe.id, { top, bottom });
     this.updatePipe(pipe);
@@ -725,10 +714,11 @@ export class Game extends Scene {
       return;
     }
 
+    //console.log("updatePipe()", "id", pipe.id, "x", "pipe.x");
     sprites.top.x = pipe.x;
     sprites.bottom.x = pipe.x;
-    sprites.top.y = 0;
-    sprites.bottom.y = 0;
+    sprites.top.y = pipe.Ytop;
+    sprites.bottom.y = pipe.Ybottom;
   }
 
   private removePipe(id: number) {
