@@ -241,7 +241,7 @@ export class GameRoom extends Room<GameState> {
     }
 
     const alivePlayers = Array.from(this.state.players.values()).filter((player) => player.alive);
-    logger.debug(`Update: ${alivePlayers.length} alive players out of ${this.state.players.size} total`);
+    //logger.debug(`Update: ${alivePlayers.length} alive players out of ${this.state.players.size} total`);
     
     if (alivePlayers.length === 0) {
       // All players died - game over

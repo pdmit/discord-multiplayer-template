@@ -46,6 +46,7 @@ export class Game extends Scene {
   private readonly scrollSpeed = 220;
   private updatingActivity = false;
   private pendingActivityUpdate = false;
+  private roomStatusText?: Phaser.GameObjects.Text;
 
   constructor() {
     super("Game");
@@ -53,26 +54,18 @@ export class Game extends Scene {
 
   async create() {
     
-    // Add a visible debug indicator at the top
-    this.add.text(50, 50, "GAME SCENE LOADED", {
-      fontFamily: "Arial Black",
-      fontSize: 24,
-      color: "#ff0000",
-      stroke: "#000000",
-      strokeThickness: 4,
-    }).setDepth(100);
-    
     this.setupWorld();
     this.setupUI();
     this.setupInput();
 
     await this.connect();
-    this.registerStateListeners();
+    this.room?.onStateChange.once(() => {
+      this.registerStateListeners();
+    });
     // Wait a moment for the room state to be fully initialized
     setTimeout(() => {
       this.updateReadyUI();
     }, 100);
-    console.log("Game scene create() completed");
   }
 
   update(_time: number, delta: number) {
@@ -249,6 +242,16 @@ export class Game extends Scene {
       })
       .setOrigin(0.5)
       .setDepth(11);
+
+      this.roomStatusText = this.add
+      .text(50, 50, "Room Status", {
+        fontFamily: "Arial Black",
+        fontSize: 26,
+        color: "#ff0000",
+        stroke: "#000000",
+        strokeThickness: 4,
+      })
+      .setDepth(100);
 
     this.updateReadyUI();
     this.setupGameOverScreen();
@@ -493,9 +496,9 @@ export class Game extends Scene {
     }
 
     if (!this.room.state.pipes) {
-      console.log("No pipes when registering state listerners")
+      console.log("No pipes when registering state listeners")
     }
-
+    
     console.log("Registering state listeners");
     const $ = getStateCallbacks(this.room);
 
@@ -521,9 +524,11 @@ export class Game extends Scene {
     }
 
     $(this.room.state.players).onAdd((player: PlayerState, sessionId: string) => {
-      console.log("Player added to room via onAdd:", sessionId, player.name, "ready:", player.ready);
-      this.addPlayer(sessionId, player);
-      
+      const sprite = this.playerSprites.get(sessionId);
+      if (!sprite) {
+        console.log("Player added to room via onAdd:", sessionId, player.name, "ready:", player.ready);
+        this.addPlayer(sessionId, player);
+      }      
       // Note: Individual player onChange callbacks are not working properly
       // We'll use periodic sync instead
     });
@@ -788,6 +793,9 @@ export class Game extends Scene {
     const running = this.room.state.running;
     const winnerId = this.room.state.winnerId as string;
     const playerCount = this.getPlayerCount();
+
+    // Tell us what the state of the room is right now
+    this.roomStatusText?.setText("Running: "+this.room.state.running+" Players: "+this.room.state.players.size);
 
     if (!running) {
       const readyCount = this.getReadyCount();
