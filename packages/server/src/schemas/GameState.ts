@@ -34,7 +34,10 @@ export class PipeState extends Schema {
   x = 0;
 
   @type("number")
-  gapY = 0;
+  Ytop = 0;
+
+  @type("number")
+  Ybottom = 0;
 }
 
 export class GameState extends Schema {

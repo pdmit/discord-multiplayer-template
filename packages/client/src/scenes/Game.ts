@@ -16,7 +16,8 @@ type PlayerState = {
 type PipeState = {
   id: number;
   x: number;
-  gapY: number;
+  Ytop: number;
+  Ybottom: number;
 };
 
 export class Game extends Scene {
@@ -95,7 +96,7 @@ export class Game extends Scene {
         if (currentRunning && this.room.state.pipes) {
           console.log("Game started, checking for pipes:", this.room.state.pipes.length);
           this.room.state.pipes.forEach((pipe: PipeState) => {
-            console.log("Pipe in room state:", pipe.id, "at x:", pipe.x, "gapY:", pipe.gapY);
+            console.log("Pipe in room state:", pipe.id, "at x:", pipe.x, "Ytop:", pipe.Ytop);
             if (!this.pipeSprites.has(pipe.id)) {
               console.log("Adding missing pipe:", pipe.id);
               this.addPipe(pipe);
@@ -503,7 +504,7 @@ export class Game extends Scene {
     if (this.room.state.pipes) {
       console.log("Found", this.room.state.pipes.length, "existing pipes in room");
       this.room.state.pipes.forEach((pipe: PipeState) => {
-        console.log("Existing pipe in room:", pipe.id, "at x:", pipe.x, "gapY:", pipe.gapY);
+        console.log("Existing pipe in room:", pipe.id, "at x:", pipe.x, "Ytop:", pipe.Ytop);
         this.addPipe(pipe);
       });
     }
@@ -668,7 +669,7 @@ export class Game extends Scene {
   }
 
   private addPipe(pipe: PipeState) {
-    console.log("Adding pipe:", pipe.id, "at x:", pipe.x, "gapY:", pipe.gapY);
+    console.log("Adding pipe:", pipe.id, "at x:", pipe.x, "Ytop:", pipe.Ytop);
     
     // Check if pipe texture exists
     if (!this.textures.exists("pipe")) {
@@ -682,16 +683,16 @@ export class Game extends Scene {
       }
       
       // Use pipe-green texture
-      const top = this.add.image(pipe.x, pipe.gapY - this.pipeGap / 2, "pipe");
+      const top = this.add.image(pipe.x, pipe.Ytop - this.pipeGap / 2, "pipe");
       top.setOrigin(0.5, 1);
       top.setFlipY(true);
       top.setDepth(3);
-      console.log("Created top pipe (pipe-green) at:", pipe.x, pipe.gapY - this.pipeGap / 2);
+      console.log("Created top pipe (pipe-green) at:", pipe.x, pipe.Ytop - this.pipeGap / 2);
 
-      const bottom = this.add.image(pipe.x, pipe.gapY + this.pipeGap / 2, "pipe");
+      const bottom = this.add.image(pipe.x, pipe.Ytop + this.pipeGap / 2, "pipe");
       bottom.setOrigin(0.5, 0);
       bottom.setDepth(3);
-      console.log("Created bottom pipe (pipe-green) at:", pipe.x, pipe.gapY + this.pipeGap / 2);
+      console.log("Created bottom pipe (pipe-green) at:", pipe.x, pipe.Ytop + this.pipeGap / 2);
       
       this.pipeSprites.set(pipe.id, { top, bottom });
       this.updatePipe(pipe);
@@ -700,18 +701,18 @@ export class Game extends Scene {
     }
     
     pipe.x = 1000;
-    pipe.gapY = 20;
+    pipe.Ytop = 20;
     const top = this.add.image(pipe.x, 0, "pipe");
     top.setOrigin(0.5, 0);
     top.setFlipY(true);
     top.setDepth(3);
-    console.log("Created top pipe at:", pipe.x, pipe.gapY - this.pipeGap / 2);
+    console.log("Created top pipe at:", pipe.x, pipe.Ytop - this.pipeGap / 2);
 
     const bottom = this.add.image(pipe.x, this.pipeHeight, "pipe-red");
     bottom.setOrigin(0.5, 0);
     bottom.setFlipY(false);
     bottom.setDepth(4);
-    console.log("Created bottom pipe at:", pipe.x, pipe.gapY + this.pipeGap / 2);
+    console.log("Created bottom pipe at:", pipe.x, pipe.Ytop + this.pipeGap / 2);
 
     this.pipeSprites.set(pipe.id, { top, bottom });
     this.updatePipe(pipe);
@@ -725,9 +726,9 @@ export class Game extends Scene {
     }
 
     sprites.top.x = pipe.x;
-    //sprites.bottom.x = pipe.x;
-    sprites.top.y = pipe.gapY - this.pipeGap / 2;
-    //sprites.bottom.y = pipe.gapY + this.pipeGap / 2;
+    sprites.bottom.x = pipe.x;
+    sprites.top.y = 0;
+    sprites.bottom.y = 0;
   }
 
   private removePipe(id: number) {

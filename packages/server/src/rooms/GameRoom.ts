@@ -10,7 +10,7 @@ export class GameRoom extends Room<GameState> {
   private flapVelocity = -250;
   private pipeSpeed = 220;
   private pipeInterval = 1800;
-  private pipeGap = 230;
+  private pipeGap = 0;
   private floorHeight = 112;
   private birdX = 260;
   private birdHalfWidth = 17;
@@ -161,10 +161,11 @@ export class GameRoom extends Room<GameState> {
 
     const minY = 180;
     const maxY = this.worldHeight - this.floorHeight - 180;
-    pipe.gapY = minY + Math.random() * Math.max(0, maxY - minY);
+    pipe.Ybottom = minY + Math.random() * Math.max(0, maxY - minY);
+    pipe.Ytop = pipe.Ybottom - this.pipeGap;
 
     this.state.pipes.push(pipe);
-    logger.info(`Pipe created: id=${pipe.id}, x=${pipe.x}, gapY=${pipe.gapY}, total pipes=${this.state.pipes.length}`);
+    logger.info(`Pipe created: id=${pipe.id}, x=${pipe.x}, Ytop=${pipe.Ytop}, Ybottom=${pipe.Ybottom}, total pipes=${this.state.pipes.length}`);
   }
 
   private update(delta: number) {
@@ -202,8 +203,8 @@ export class GameRoom extends Room<GameState> {
       for (const pipe of this.state.pipes) {
         const pipeLeft = pipe.x - this.pipeWidth / 2;
         const pipeRight = pipe.x + this.pipeWidth / 2;
-        const gapTop = pipe.gapY - this.pipeGap / 2;
-        const gapBottom = pipe.gapY + this.pipeGap / 2;
+        const gapTop = pipe.Ytop;
+        const gapBottom = pipe.Ybottom;
 
         const birdLeft = this.birdX - this.birdHalfWidth;
         const birdRight = this.birdX + this.birdHalfWidth;
@@ -212,7 +213,7 @@ export class GameRoom extends Room<GameState> {
 
         if (birdRight > pipeLeft && birdLeft < pipeRight) {
           if (birdTop < gapTop || birdBottom > gapBottom) {
-            logger.warn(`Player hit pipe at x=${pipe.x}, player y=${player.y}, gapY=${pipe.gapY}`);
+            logger.warn(`Player hit pipe at x=${pipe.x}, player y=${player.y}, Ytop=${pipe.Ytop}, Ybottom=${pipe.Ybottom}`);
             player.alive = false;
             break;
           }
