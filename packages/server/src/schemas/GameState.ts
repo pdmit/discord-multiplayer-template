@@ -52,4 +52,7 @@ export class GameState extends Schema {
 
   @type("string")
   winnerId = "";
+
+  @type("number")
+  difficulty = 0;
 }

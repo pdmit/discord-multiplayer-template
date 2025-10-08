@@ -269,6 +269,9 @@ export class Game extends Scene {
     // Semi-transparent background
     const overlay = this.add.rectangle(0, 0, width, height, 0x000000, 0.7);
     this.gameOverScreen.add(overlay);
+    overlay.setInteractive({ useHandCursor: false });
+    overlay.on("pointerdown", (pointer) => {      // do nothing — this just blocks input below
+    });
 
     // Game over text
     this.gameOverText = this.add.text(0, -50, "GAME OVER", {
@@ -433,7 +436,7 @@ export class Game extends Scene {
     const running = this.room.state.running as boolean;
     const playerCount = this.getPlayerCount();
     const readyCount = this.getReadyCount();
-    const showLobbyUi = !running && playerCount > 0;
+    const showLobbyUi = !running && playerCount > 0; // Change this from a conditional function to a variable that is set before game start/after game over
     
     console.log("Ready UI state:", { 
       running, 
@@ -732,9 +735,9 @@ export class Game extends Scene {
       return;
     }
 
-    //sprites.top.destroy();
-    //sprites.bottom.destroy();
-    //this.pipeSprites.delete(id);
+    sprites.top.destroy();
+    sprites.bottom.destroy();
+    this.pipeSprites.delete(id);
   }
 
   private refreshScoreboard() {
@@ -795,7 +798,7 @@ export class Game extends Scene {
     const playerCount = this.getPlayerCount();
 
     // Tell us what the state of the room is right now
-    this.roomStatusText?.setText("Running: "+this.room.state.running+" Players: "+this.room.state.players.size);
+    this.roomStatusText?.setText("Running: "+this.room.state.running+" Players: "+this.room.state.players.size+" Difficulty: "+this.room.state.difficulty);
 
     if (!running) {
       const readyCount = this.getReadyCount();

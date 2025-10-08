@@ -20,7 +20,6 @@ export class GameRoom extends Room<GameState> {
   private nextPipeId = 1;
   private elapsedSincePipe = 0;
   private skins: Array<PlayerState["skin"]> = ["yellow", "blue", "red"];
-
   private worldWidth = 1280;
   private worldHeight = 720;
 
@@ -138,6 +137,7 @@ export class GameRoom extends Room<GameState> {
     this.state.running = true;
     this.state.winnerId = "";
     this.clearLevel();
+    this.state.difficulty = 0;
 
     for (const [, player] of this.state.players) {
       player.alive = true;
@@ -176,6 +176,7 @@ export class GameRoom extends Room<GameState> {
       return;
     }
 
+    this.state.difficulty += delta;
     this.elapsedSincePipe += delta * 1000;
     if (this.elapsedSincePipe >= this.pipeInterval) {
       this.elapsedSincePipe = 0;
