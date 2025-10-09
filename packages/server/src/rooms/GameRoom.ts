@@ -23,6 +23,15 @@ export class GameRoom extends Room<GameState> {
   private worldWidth = 1280;
   private worldHeight = 720;
 
+  // Difficulty -> vertical gap scaling (harder means smaller gap)
+  private maxPipeGap = 600;              // px at difficulty 0 (easiest)
+  private minPipeGap = 120;              // px clamp (hardest)
+  private pipeGapShrinkPerSec = 2.4;      // px per second reduction
+
+  private getCurrentPipeGap(): number {
+    return Math.max(this.minPipeGap, this.maxPipeGap - (this.state.difficulty * this.pipeGapShrinkPerSec));
+  }
+
   onCreate(): void {
     this.setSimulationInterval((deltaTime) => this.update(deltaTime / 1000));
 
@@ -160,15 +169,34 @@ export class GameRoom extends Room<GameState> {
     pipe.id = this.nextPipeId++;
     pipe.x = startX ?? this.worldWidth + 200;
 
-    const pipegap = Math.max((Math.random() * 300), 100); 
+    // Use difficulty-scaled vertical gap (smaller with higher difficulty)
+    const gap = this.getCurrentPipeGap();
 
-    const minY = 180;
-    const maxY = this.worldHeight - this.floorHeight - minY;
-    pipe.Ybottom =  maxY + (Math.random() * Math.max(0, maxY - minY));
-    pipe.Ytop = pipe.Ybottom - pipegap - this.pipeHeight;
+    // Choose a vertical center that ensures both pipes fit the screen and floor constraints
+    const floorY = this.worldHeight - this.floorHeight;
+    const topMargin = 60; // keep some sky margin
+    const bottomMargin = 60; // keep some floor margin
+
+    const minTopTopY = topMargin; // top pipe's top Y must be >= this
+    const maxBottomTopY = floorY - this.pipeHeight - bottomMargin; // bottom pipe's top Y must be <= this
+
+    // Given: Ytop = center - gap/2 - pipeHeight, Ybottom = center + gap/2
+    // Constraints ->
+    //   center >= minTopTopY + pipeHeight + gap/2
+    //   center <= maxBottomTopY - gap/2
+    const centerMin = minTopTopY + this.pipeHeight + gap / 2;
+    const centerMax = maxBottomTopY - gap / 2;
+
+    // Guard against impossible ranges by clamping and falling back to midpoint
+    const usableMin = Math.min(centerMin, centerMax);
+    const usableMax = Math.max(centerMin, centerMax);
+    const center = usableMin + Math.random() * Math.max(0, usableMax - usableMin);
+
+    pipe.Ybottom = center + gap / 2;                 // bottom pipe's top Y
+    pipe.Ytop = center - gap / 2 - this.pipeHeight;  // top pipe's top Y
 
     this.state.pipes.push(pipe);
-    logger.info(`Pipe created: id=${pipe.id}, x=${pipe.x}, Ytop=${pipe.Ytop}, Ybottom=${pipe.Ybottom}, total pipes=${this.state.pipes.length}`);
+    logger.info(`Pipe created: id=${pipe.id}, x=${pipe.x}, Ytop=${pipe.Ytop}, Ybottom=${pipe.Ybottom}, gap=${gap}, diff=${this.state.difficulty.toFixed(2)}, total pipes=${this.state.pipes.length}`);
   }
 
   private update(delta: number) {
