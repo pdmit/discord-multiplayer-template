@@ -25,7 +25,16 @@ export class Game extends Scene {
   private background!: Phaser.GameObjects.TileSprite;
   private ground!: Phaser.GameObjects.TileSprite;
   private playerSprites = new Map<string, Phaser.GameObjects.Sprite>();
-  private pipeSprites = new Map<number, { top: Phaser.GameObjects.Image; bottom: Phaser.GameObjects.Image }>();
+  private pipeSprites = new Map<
+    number,
+    {
+      top: Phaser.GameObjects.Image;
+      bottom: Phaser.GameObjects.Image;
+      targetX: number;
+      targetTopY: number;
+      targetBottomY: number;
+    }
+  >();
   private playerCache = new Map<string, { alive: boolean; score: number; ready: boolean }>();
   private scoreText!: Phaser.GameObjects.Text;
   private scoreBackdrop!: Phaser.GameObjects.Rectangle;
@@ -44,6 +53,7 @@ export class Game extends Scene {
   private readonly pipeHeight = 315;
   private readonly birdX = 260;
   private readonly scrollSpeed = 220;
+  private readonly pipeLerpSpeed = 12;
   private updatingActivity = false;
   private pendingActivityUpdate = false;
   private roomStatusText?: Phaser.GameObjects.Text;
@@ -72,6 +82,18 @@ export class Game extends Scene {
     const scroll = (this.scrollSpeed * delta) / 1000;
     this.background.tilePositionX += scroll;
     this.ground.tilePositionX += scroll;
+
+    const interpolationAlpha = Phaser.Math.Clamp(
+      1 - Math.exp((-this.pipeLerpSpeed * delta) / 1000),
+      0,
+      1,
+    );
+    this.pipeSprites.forEach((sprites) => {
+      sprites.top.x = Phaser.Math.Linear(sprites.top.x, sprites.targetX, interpolationAlpha);
+      sprites.bottom.x = Phaser.Math.Linear(sprites.bottom.x, sprites.targetX, interpolationAlpha);
+      sprites.top.y = Phaser.Math.Linear(sprites.top.y, sprites.targetTopY, interpolationAlpha);
+      sprites.bottom.y = Phaser.Math.Linear(sprites.bottom.y, sprites.targetBottomY, interpolationAlpha);
+    });
     
     // Periodic sync for ready state changes and running state
     if (this.room && this.room.state && this.room.state.players) {
@@ -711,7 +733,13 @@ export class Game extends Scene {
     bottom.setDepth(4);
     console.log("Created bottom pipe at:", pipe.x, pipe.Ybottom);
 
-    this.pipeSprites.set(pipe.id, { top, bottom });
+    this.pipeSprites.set(pipe.id, {
+      top,
+      bottom,
+      targetX: pipe.x,
+      targetTopY: pipe.Ytop,
+      targetBottomY: pipe.Ybottom,
+    });
     this.updatePipe(pipe);
     console.log("Pipe added successfully, total pipes:", this.pipeSprites.size);
   }
@@ -722,11 +750,9 @@ export class Game extends Scene {
       return;
     }
 
-    //console.log("updatePipe()", "id", pipe.id, "x", "pipe.x");
-    sprites.top.x = pipe.x;
-    sprites.bottom.x = pipe.x;
-    sprites.top.y = pipe.Ytop;
-    sprites.bottom.y = pipe.Ybottom;
+    sprites.targetX = pipe.x;
+    sprites.targetTopY = pipe.Ytop;
+    sprites.targetBottomY = pipe.Ybottom;
   }
 
   private removePipe(id: number) {
