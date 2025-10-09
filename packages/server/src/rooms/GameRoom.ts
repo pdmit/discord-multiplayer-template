@@ -3,14 +3,12 @@ import { GameState, PlayerState, PipeState } from "../schemas/GameState";
 import logger from "../logger";
 
 export class GameRoom extends Room<GameState> {
-  state = new GameState();
   maxClients = 25; // Current Discord limit is 25
 
   private gravity = 800; // Reduced gravity for testing
   private flapVelocity = -250;
   private pipeSpeed = 220;
   private pipeInterval = 1800;
-  private pipeGap = 300;
   private floorHeight = 112;
   private birdX = 260;
   private birdHalfWidth = 17;
@@ -23,9 +21,18 @@ export class GameRoom extends Room<GameState> {
   private worldWidth = 1280;
   private worldHeight = 720;
 
+  // Debug: expose internal schema refId when logging
+  private refIdOf(obj: any) {
+    try {
+      return (obj as any)?.$changes?.refId ?? "n/a";
+    } catch {
+      return "n/a";
+    }
+  }
+
   // Difficulty -> vertical gap scaling (harder means smaller gap)
-  private maxPipeGap = 600;              // px at difficulty 0 (easiest)
-  private minPipeGap = 120;              // px clamp (hardest)
+  private maxPipeGap = 300;              // px at difficulty 0 (easiest)
+  private minPipeGap = 60;              // px clamp (hardest)
   private pipeGapShrinkPerSec = 2.4;      // px per second reduction
 
   private getCurrentPipeGap(): number {
@@ -33,6 +40,8 @@ export class GameRoom extends Room<GameState> {
   }
 
   onCreate(): void {
+    // Properly register the state with Colyseus (ensures correct change-tree + ref ordering)
+    this.setState(new GameState());
     this.setSimulationInterval((deltaTime) => this.update(deltaTime / 1000));
 
     this.onMessage("flap", (client) => {
@@ -86,7 +95,8 @@ export class GameRoom extends Room<GameState> {
     if (this.state.players.size === 0) {
       this.state.running = false;
       this.state.winnerId = "";
-      this.clearLevel();
+      // Defer clearing to next tick to avoid delete+patch ordering issues
+      this.deferClearLevel();
       return;
     }
 
@@ -190,13 +200,16 @@ export class GameRoom extends Room<GameState> {
     // Guard against impossible ranges by clamping and falling back to midpoint
     const usableMin = Math.min(centerMin, centerMax);
     const usableMax = Math.max(centerMin, centerMax);
-    const center = usableMin + Math.random() * Math.max(0, usableMax - usableMin);
+    //const center = usableMin + Math.random() * Math.max(0, usableMax - usableMin);
+    const center = this.worldHeight / 2; // for testing, keep pipes centered
 
     pipe.Ybottom = center + gap / 2;                 // bottom pipe's top Y
     pipe.Ytop = center - gap / 2 - this.pipeHeight;  // top pipe's top Y
 
     this.state.pipes.push(pipe);
-    logger.info(`Pipe created: id=${pipe.id}, x=${pipe.x}, Ytop=${pipe.Ytop}, Ybottom=${pipe.Ybottom}, gap=${gap}, diff=${this.state.difficulty.toFixed(2)}, total pipes=${this.state.pipes.length}`);
+    logger.info(
+      `Pipe created: id=${pipe.id}, ref=${this.refIdOf(pipe)}, x=${pipe.x}, Ytop=${pipe.Ytop}, Ybottom=${pipe.Ybottom}, gap=${gap}, diff=${this.state.difficulty.toFixed(2)}, total pipes=${this.state.pipes.length}`
+    );
   }
 
   private update(delta: number) {
@@ -212,6 +225,13 @@ export class GameRoom extends Room<GameState> {
     }
 
     const floorY = this.worldHeight - this.floorHeight;
+
+    // Important: remove expired pipes BEFORE mutating remaining ones
+    // (avoids sending property patches on a pipe in the same tick it is deleted)
+    while (this.state.pipes.length > 0 && this.state.pipes[0].x < -this.pipeWidth) {
+      const removed = this.state.pipes.shift();
+      logger.info(`Pipe removed (pre-move): id=${removed?.id}, ref=${this.refIdOf(removed)}`);
+    }
 
     for (const [, player] of this.state.players) {
       if (!player.alive) {
@@ -265,19 +285,16 @@ export class GameRoom extends Room<GameState> {
       // }
     }
 
-    while (this.state.pipes.length > 0 && this.state.pipes[0].x < -this.pipeWidth) {
-      this.state.pipes.shift();
-    }
-
     const alivePlayers = Array.from(this.state.players.values()).filter((player) => player.alive);
     //logger.debug(`Update: ${alivePlayers.length} alive players out of ${this.state.players.size} total`);
-    
+
     if (alivePlayers.length === 0) {
       // All players died - game over
       logger.info("Game over - all players died");
       this.state.running = false;
       this.state.winnerId = "";
-      this.clearLevel();
+      // Defer clearing to next tick to avoid delete+patch ordering issues
+      this.deferClearLevel();
       this.setAllPlayersReady(false);
       for (const [, player] of this.state.players) {
         player.velocity = 0;
@@ -287,7 +304,8 @@ export class GameRoom extends Room<GameState> {
       logger.info("Multiplayer game over - winner:", this.findPlayerId(alivePlayers[0]));
       this.state.running = false;
       this.state.winnerId = this.findPlayerId(alivePlayers[0]);
-      this.clearLevel();
+      // Defer clearing to next tick to avoid delete+patch ordering issues
+      this.deferClearLevel();
       this.setAllPlayersReady(false);
       for (const [, player] of this.state.players) {
         player.velocity = 0;
@@ -308,5 +326,11 @@ export class GameRoom extends Room<GameState> {
     }
 
     return "";
+  }
+
+  private deferClearLevel() {
+    this.clock.setTimeout(() => {
+      this.clearLevel();
+    }, 0);
   }
 }
