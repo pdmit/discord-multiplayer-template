@@ -62,13 +62,34 @@ export class Game extends Scene {
   private updatingActivity = false;
   private pendingActivityUpdate = false;
   private roomStatusText?: Phaser.GameObjects.Text;
+  private readonly showDebugInfo: boolean;
+
+  private stagePopup?: Phaser.GameObjects.Container;
+  private volumeSlider?: Phaser.GameObjects.Rectangle;
+  private volumeSliderHitArea?: Phaser.GameObjects.Zone;
+  private volumeSliderKnob?: Phaser.GameObjects.Rectangle;
+  private volumeText?: Phaser.GameObjects.Text;
+  private currentVolume: number = 0.4;  // Default volume
+  private isDraggingVolume: boolean = false;
 
   constructor() {
     super("Game");
+
+    const params = new URLSearchParams(location.search);
+    const envDebug = import.meta.env?.VITE_SHOW_DEBUG ?? "";
+    const normalizedEnvDebug = envDebug.toString().toLowerCase();
+    const queryDebug = (params.get("debug") ?? "").toLowerCase();
+
+    this.showDebugInfo =
+      normalizedEnvDebug === "1" ||
+      normalizedEnvDebug === "true" ||
+      queryDebug === "1" ||
+      queryDebug === "true" ||
+      params.has("debug");
   }
 
   async create() {
-    
+
     this.setupWorld();
     this.setupUI();
     this.setupInput();
@@ -90,6 +111,9 @@ export class Game extends Scene {
       console.log("Detected stage change:", stageValue);
       this.refreshScoreboard();
       this.updateStatusMessage();
+      if (stageValue > 1) {
+        this.showStagePopup(stageValue);
+      }
     }
 
     const clampedStage = Math.max(0, Math.min(this.maxStage, stageValue));
@@ -112,11 +136,11 @@ export class Game extends Scene {
       sprites.top.y = Phaser.Math.Linear(sprites.top.y, sprites.targetTopY, interpolationAlpha);
       sprites.bottom.y = Phaser.Math.Linear(sprites.bottom.y, sprites.targetBottomY, interpolationAlpha);
     });
-    
+
     // Periodic sync for ready state changes and running state
     if (this.room && this.room.state && this.room.state.players) {
       let needsUIUpdate = false;
-      
+
       // Check if running state changed
       const currentRunning = this.room.state.running as boolean;
       if (currentRunning !== this.lastKnownRunning) {
@@ -124,7 +148,7 @@ export class Game extends Scene {
         this.lastKnownRunning = currentRunning;
         needsUIUpdate = true;
         this.updateStatusMessage();
-        
+
         // When game starts, check for existing pipes
         if (currentRunning && this.room.state.pipes) {
           console.log("Game started, checking for pipes:", this.room.state.pipes.length);
@@ -133,7 +157,7 @@ export class Game extends Scene {
             if (!this.pipeSprites.has(pipe.id)) {
               console.log("Adding missing pipe:", pipe.id);
               this.addPipe(pipe);
-              
+
             } else {
               console.log("Pipe already exists:", pipe.id);
             }
@@ -146,7 +170,7 @@ export class Game extends Scene {
           this.updatePipe(pipe);
         });
       }
-      
+
       this.room.state.players.forEach((player: PlayerState, sessionId: string) => {
         const cached = this.playerCache.get(sessionId);
         if (cached && cached.ready !== player.ready) {
@@ -166,7 +190,7 @@ export class Game extends Scene {
 
         this.syncPlayer(sessionId, player, []);
       });
-      
+
       // Force UI update if any state changed
       if (needsUIUpdate) {
         this.updateReadyUI();
@@ -182,15 +206,105 @@ export class Game extends Scene {
     this.ground = this.add.tileSprite(0, height - 112, width * 1.5, 112, "base").setOrigin(0, 0);
   }
 
+  private showStagePopup(stage: number) {
+    // Clean up existing popup if it exists
+    this.stagePopup?.destroy();
+
+    const width = Number(this.game.config.width);
+    const height = Number(this.game.config.height);
+
+    // Create a new container for the popup near the top
+    this.stagePopup = this.add.container(width / 2, 120).setDepth(100);
+
+    // Add background with glow effect - more transparent and smaller
+    const bg = this.add.rectangle(0, 0, 400, 80, 0x000000, 0.6)
+      .setStrokeStyle(3, 0xff8c00ff);
+
+    // Add chevrons for extra flair
+    const leftChevrons = this.add.text(-180, 0, ">>", {
+      fontFamily: "Arial Black",
+      fontSize: 32,
+      color: '#ff8c00ff',
+      stroke: '#000000',
+      strokeThickness: 4
+    }).setOrigin(0.5);
+
+    const rightChevrons = this.add.text(180, 0, "<<", {
+      fontFamily: "Arial Black",
+      fontSize: 32,
+      color: '#ff8c00ff',
+      stroke: '#000000',
+      strokeThickness: 4
+    }).setOrigin(0.5);
+
+    // Add text with dynamic styling - smaller font
+    const text = this.add.text(0, 0,
+      `STAGE ${stage}! SPEED +${Math.round(stage * 20)}%`, {
+      fontFamily: "Arial Black",
+      fontSize: 32,
+      color: '#ff8c00ff',
+      align: 'center',
+      stroke: '#000000',
+      strokeThickness: 6
+    }).setOrigin(0.5);
+
+    // Add items to container
+    this.stagePopup.add([bg, text, leftChevrons, rightChevrons]);
+
+    // Play sound effect
+    this.sound.play("swoosh", { volume: 0.4 });
+
+    // Animate chevrons
+    this.tweens.add({
+      targets: [leftChevrons, rightChevrons],
+      x: {
+        getStart: (target: any) => target.x,
+        getEnd: (target: any) => target.x + (target.x < 0 ? -20 : 20)
+      },
+      duration: 300,
+      yoyo: true,
+      repeat: 2
+    });
+
+    // Add scale animation
+    this.stagePopup.setScale(0);
+    this.tweens.add({
+      targets: this.stagePopup,
+      scaleX: 1,
+      scaleY: 1,
+      duration: 300,
+      ease: 'Back.out',
+      onComplete: () => {
+        // Add flash effect
+        this.tweens.add({
+          targets: bg,
+          strokeThickness: 6,
+          duration: 100,
+          yoyo: true,
+          repeat: 2
+        });
+        // Remove popup after delay
+        this.time.delayedCall(1200, () => {
+          this.tweens.add({
+            targets: this.stagePopup,
+            scaleX: 0,
+            scaleY: 0,
+            duration: 200,
+            ease: 'Back.in',
+            onComplete: () => {
+              this.stagePopup?.destroy();
+            }
+          });
+        });
+      }
+    });
+  }
+
   private setupUI() {
     const width = Number(this.game.config.width);
     const height = Number(this.game.config.height);
 
-    this.scoreBackdrop = this.add
-      .rectangle(width / 2, 40, width * 0.6, 70, 0x000000, 0.35)
-      .setOrigin(0.5)
-      .setDepth(10);
-
+    // Create score text first so we can size the backdrop to match
     this.scoreText = this.add
       .text(width / 2, 40, "Connecting...", {
         fontFamily: "Arial Black",
@@ -202,6 +316,19 @@ export class Game extends Scene {
       })
       .setOrigin(0.5)
       .setDepth(11);
+
+    const padding = 40;  // Horizontal padding for the backdrop
+    this.scoreBackdrop = this.add
+      .rectangle(
+        this.scoreText.x,
+        this.scoreText.y,
+        this.scoreText.width + padding,
+        70,
+        0x000000,
+        0.35
+      )
+      .setOrigin(0.5)
+      .setDepth(10);
 
     this.statusText = this.add
       .text(width / 2, 120, "Waiting for players...", {
@@ -283,15 +410,103 @@ export class Game extends Scene {
       .setOrigin(0.5)
       .setDepth(11);
 
-      this.roomStatusText = this.add
-      .text(50, 50, "Room Status", {
-        fontFamily: "Arial Black",
-        fontSize: 26,
-        color: "#ff0000",
-        stroke: "#000000",
-        strokeThickness: 4,
+    // Create volume control
+    const sliderWidth = 100;
+    const sliderHeight = 4;
+    const knobSize = 15;
+    const sliderY = height - 70;
+
+    // Create slider background with larger hit area
+    this.volumeSlider = this.add
+      .rectangle(width - 80, sliderY, sliderWidth, sliderHeight, 0x666666)
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(11);
+
+    this.volumeSliderHitArea = this.add
+      .zone(width - 80, sliderY, sliderWidth, 30)
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setInteractive({ useHandCursor: true, cursor: "pointer" })
+      .setDepth(12);
+
+    this.volumeSliderHitArea
+      .on("pointerdown", this.startVolumeChange, this)
+      .on("pointermove", (pointer: Phaser.Input.Pointer) => {
+        if (this.isDraggingVolume) {
+          this.updateVolume(pointer);
+        }
       })
-      .setDepth(100);
+      .on("pointerup", this.endVolumeChange, this)
+      .on("pointerout", this.endVolumeChange, this);
+
+    // Create slider knob
+    this.volumeSliderKnob = this.add
+      .rectangle(
+        width - 80 + (sliderWidth * this.currentVolume) - (sliderWidth / 2),
+        sliderY,
+        knobSize,
+        knobSize,
+        0xffffff
+      )
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(13)
+      .setInteractive({ useHandCursor: true, cursor: "pointer" });
+
+    this.volumeSliderKnob.on("pointerdown", this.startVolumeChange, this);
+    this.input.setDraggable(this.volumeSliderKnob);
+
+    this.input.on("dragstart", (pointer: Phaser.Input.Pointer, gameObject: Phaser.GameObjects.GameObject) => {
+      if (gameObject === this.volumeSliderKnob) {
+        this.startVolumeChange(pointer);
+      }
+    });
+
+    this.input.on("drag", (pointer: Phaser.Input.Pointer, gameObject: Phaser.GameObjects.GameObject) => {
+      if (gameObject === this.volumeSliderKnob) {
+        this.applyVolumeFromPointer(pointer);
+      }
+    });
+
+    this.input.on("dragend", (_pointer: Phaser.Input.Pointer, gameObject: Phaser.GameObjects.GameObject) => {
+      if (gameObject === this.volumeSliderKnob) {
+        this.endVolumeChange();
+      }
+    });
+
+    this.input.on("pointermove", (pointer: Phaser.Input.Pointer) => {
+      if (this.isDraggingVolume) {
+        this.updateVolume(pointer);
+      }
+    });
+
+    this.input.on("pointerup", this.endVolumeChange, this);
+
+    // Add volume label
+    this.volumeText = this.add
+      .text(width - 80, sliderY - 20, `Volume ${Math.round(this.currentVolume * 100)}%`, {
+        font: "16px Arial",
+        color: "#ffffff",
+        stroke: "#000000",
+        strokeThickness: 3,
+      })
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(11);
+
+    // Only create debug room status text if debug is enabled
+    if (this.showDebugInfo) {
+      this.roomStatusText = this.add
+        .text(100, 600, "Room Status", {
+          fontFamily: "Arial Black",
+          fontSize: 26,
+          color: "#ff0000",
+          stroke: "#000000",
+          strokeThickness: 4,
+        })
+        .setDepth(100);
+    }
 
     this.updateReadyUI();
     this.setupGameOverScreen();
@@ -368,12 +583,20 @@ export class Game extends Scene {
 
   private setupInput() {
     console.log("setupInput() called");
-    this.input.on("pointerdown", () => this.handleFlap());
+    this.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => this.handleFlap(pointer));
     this.input.keyboard?.on("keydown-SPACE", () => this.handleFlap());
     this.input.keyboard?.on("keydown-UP", () => this.handleFlap());
   }
 
-  private handleFlap() {
+  private handleFlap(pointer?: Phaser.Input.Pointer) {
+    if (this.isDraggingVolume) {
+      return;
+    }
+
+    if (pointer && this.isPointerOverVolumeUI(pointer)) {
+      return;
+    }
+
     if (!this.room || !this.room.state.running) {
       console.log("handleFlap() called but room or running state is false");
       return;
@@ -401,7 +624,7 @@ export class Game extends Scene {
 
     // Show the screen
     this.gameOverScreen.setVisible(true);
-    
+
     console.log(`Game over screen shown - Won: ${won}, Score: ${score}`);
   }
 
@@ -412,13 +635,13 @@ export class Game extends Scene {
 
     // Hide game over screen
     this.gameOverScreen?.setVisible(false);
-    
+
     // Reset local ready state
     this.localPlayerReady = false;
-    
+
     // Send ready up message to start new game
     this.room.send("setReady", { ready: true });
-    
+
     console.log("Restarting game...");
   }
 
@@ -430,14 +653,14 @@ export class Game extends Scene {
     const nextReady = !this.localPlayerReady;
     this.localPlayerReady = nextReady;
     console.log("Toggling ready state to:", nextReady);
-    
+
     // Update UI immediately for better responsiveness
     this.updateReadyUI();
-    
+
     // Send to server
     this.room.send("setReady", { ready: nextReady });
     console.log("Sent setReady message to server");
-    
+
     // Also update the server state immediately to avoid sync issues
     const player = this.room.state.players.get(this.localPlayerId);
     if (player) {
@@ -456,9 +679,106 @@ export class Game extends Scene {
     this.readyButtonBackground.setFillStyle(color, alpha);
   }
 
+  private getPointerPosition(pointer: Phaser.Input.Pointer) {
+    const camera = this.cameras?.main;
+    if (camera) {
+      const out = new Phaser.Math.Vector2();
+      pointer.positionToCamera(camera, out);
+      return out;
+    }
+    return new Phaser.Math.Vector2(pointer.x, pointer.y);
+  }
+
+  private getVolumeTrackBounds() {
+    if (!this.volumeSlider) {
+      return undefined;
+    }
+
+    return this.volumeSlider.getBounds();
+  }
+
+  private getVolumeKnobBounds() {
+    if (!this.volumeSliderKnob) {
+      return undefined;
+    }
+
+    return this.volumeSliderKnob.getBounds();
+  }
+
+  private getVolumeHitBounds() {
+    if (this.volumeSliderHitArea) {
+      return this.volumeSliderHitArea.getBounds();
+    }
+
+    return this.getVolumeTrackBounds();
+  }
+
+  private isPointerOverVolumeUI(pointer: Phaser.Input.Pointer) {
+    const pointerPosition = this.getPointerPosition(pointer);
+    const pointerX = pointerPosition.x;
+    const pointerY = pointerPosition.y;
+
+    const hitBounds = this.getVolumeHitBounds();
+    if (hitBounds && Phaser.Geom.Rectangle.Contains(hitBounds, pointerX, pointerY)) {
+      return true;
+    }
+
+    const knobBounds = this.getVolumeKnobBounds();
+    if (knobBounds && Phaser.Geom.Rectangle.Contains(knobBounds, pointerX, pointerY)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private applyVolumeFromPointer(pointer: Phaser.Input.Pointer) {
+    const trackBounds = this.getVolumeTrackBounds();
+    if (!trackBounds || !this.volumeSliderKnob) {
+      return;
+    }
+
+    const pointerPosition = this.getPointerPosition(pointer);
+    const pointerX = pointerPosition.x;
+    const clampedX = Phaser.Math.Clamp(pointerX, trackBounds.left, trackBounds.right);
+    let volume = (clampedX - trackBounds.left) / trackBounds.width;
+    volume = Phaser.Math.Clamp(Math.round(volume * 100) / 100, 0, 1);
+
+    this.currentVolume = volume;
+    this.volumeSliderKnob.x = clampedX;
+    this.volumeSliderKnob.y = trackBounds.centerY;
+
+    if (this.volumeText) {
+      this.volumeText.setText(`Volume ${Math.round(volume * 100)}%`);
+    }
+
+    this.sound.setVolume(volume);
+  }
+
+  private startVolumeChange(pointer: Phaser.Input.Pointer) {
+    if (!this.volumeSlider) return;
+
+    pointer.event?.stopPropagation?.();
+    pointer.event?.preventDefault?.();
+
+    this.isDraggingVolume = true;
+    this.applyVolumeFromPointer(pointer);
+  }
+
+  private updateVolume(pointer: Phaser.Input.Pointer) {
+    if (!this.isDraggingVolume && !pointer.isDown) {
+      return;
+    }
+
+    this.applyVolumeFromPointer(pointer);
+  }
+
+  private endVolumeChange(_pointer?: Phaser.Input.Pointer) {
+    this.isDraggingVolume = false;
+  }
+
   private updateReadyUI() {
     console.log("updateReadyUI called");
-    
+
     if (!this.readyButtonBackground || !this.readyButtonLabel || !this.readyCountText) {
       console.log("Ready UI elements not initialized");
       return;
@@ -477,12 +797,12 @@ export class Game extends Scene {
     const playerCount = this.getPlayerCount();
     const readyCount = this.getReadyCount();
     const showLobbyUi = !running && playerCount > 0; // Change this from a conditional function to a variable that is set before game start/after game over
-    
-    console.log("Ready UI state:", { 
-      running, 
-      playerCount, 
-      readyCount, 
-      showLobbyUi, 
+
+    console.log("Ready UI state:", {
+      running,
+      playerCount,
+      readyCount,
+      showLobbyUi,
       localPlayerReady: this.localPlayerReady,
       localPlayerId: this.localPlayerId,
       pipesCount: this.room.state.pipes?.length || 0,
@@ -541,7 +861,7 @@ export class Game extends Scene {
     if (!this.room.state.pipes) {
       console.log("No pipes when registering state listeners")
     }
-    
+
     console.log("Registering state listeners");
     const $ = getStateCallbacks(this.room);
 
@@ -551,7 +871,7 @@ export class Game extends Scene {
       this.room.state.players.forEach((player: PlayerState, sessionId: string) => {
         console.log("Existing player in room:", sessionId, player.name, "ready:", player.ready);
         this.addPlayer(sessionId, player);
-        
+
         // Note: Individual player onChange callbacks are not working properly
         // We'll use periodic sync instead
       });
@@ -571,7 +891,7 @@ export class Game extends Scene {
       if (!sprite) {
         console.log("Player added to room via onAdd:", sessionId, player.name, "ready:", player.ready);
         this.addPlayer(sessionId, player);
-      }      
+      }
       // Note: Individual player onChange callbacks are not working properly
       // We'll use periodic sync instead
     });
@@ -623,7 +943,7 @@ export class Game extends Scene {
 
   private addPlayer(sessionId: string, player: PlayerState) {
     console.log("Adding player:", sessionId, "with ready state:", player.ready);
-    
+
     const sprite = this.add.sprite(this.birdX, player.y, this.getBirdTexture(player.skin));
     sprite.setDepth(5);
     sprite.play(this.getBirdAnimation(player.skin));
@@ -635,17 +955,17 @@ export class Game extends Scene {
 
     this.playerSprites.set(sessionId, sprite);
     this.playerCache.set(sessionId, { alive: player.alive, score: player.score, ready: player.ready });
-    
+
     if (sessionId === this.localPlayerId) {
       this.localPlayerReady = player.ready;
       console.log("Set local player ready state to:", player.ready);
     }
-    
+
     this.syncPlayer(sessionId, player, []);
     this.refreshScoreboard();
     this.updateStatusMessage();
     this.updateReadyUI();
-    
+
     console.log("Player added successfully. Cache now has:", this.playerCache.size, "players");
   }
 
@@ -862,8 +1182,11 @@ export class Game extends Scene {
       this.scoreText.setText([...headerLines, ...lines].join("\n"));
     }
 
-    this.scoreBackdrop.width = this.scoreText.width + 40;
-    this.scoreBackdrop.height = this.scoreText.height + 30;
+    // Update backdrop size and ensure it stays centered
+    const padding = 40;
+    const verticalPadding = 30;
+    this.scoreBackdrop.setSize(this.scoreText.width + padding, this.scoreText.height + verticalPadding);
+    this.scoreBackdrop.setPosition(this.scoreText.x, this.scoreText.y);
     this.updateReadyUI();
     void this.updateDiscordActivityPresence();
   }
@@ -881,14 +1204,16 @@ export class Game extends Scene {
     const difficultyValue = Number((this.room.state as any).difficulty ?? 0);
     const difficultyText = difficultyValue.toFixed(1);
 
-    // Tell us what the state of the room is right now
-    this.roomStatusText?.setText(
-      `Running: ${running} Players: ${playerCount} Stage: ${stageLabel} Difficulty: ${difficultyText}`,
-    );
+    // Update debug info if enabled
+    if (this.showDebugInfo && this.roomStatusText) {
+      this.roomStatusText.setText(
+        `Running: ${running} Players: ${playerCount} Stage: ${stageLabel} Difficulty: ${difficultyText}`,
+      );
+    }
 
     if (!running) {
       const readyCount = this.getReadyCount();
-      
+
       // Check if it's a single player game over (no winner, but game ended)
       if (!winnerId && playerCount === 1) {
         const localPlayer = this.room.state.players.get(this.localPlayerId);
@@ -898,13 +1223,13 @@ export class Game extends Scene {
           return;
         }
       }
-      
+
       if (winnerId) {
         const winner = this.room.state.players.get(winnerId) as PlayerState | undefined;
         const winnerName = winner ? winner.name : "Nobody";
         const isLocalWinner = winnerId === this.localPlayerId;
         this.statusText.setText(`${winnerName} wins!\nPress Ready to play again.`);
-        
+
         // Show game over screen for local player
         if (isLocalWinner) {
           this.showGameOverScreen(true, winner?.score || 0);
