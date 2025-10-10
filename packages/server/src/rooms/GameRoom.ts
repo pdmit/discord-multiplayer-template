@@ -7,7 +7,8 @@ export class GameRoom extends Room<GameState> {
 
   private gravity = 800; // Reduced gravity for testing
   private flapVelocity = -250;
-  private pipeSpeed = 220;
+  private readonly basePipeSpeed = 220;
+  private pipeSpeed = this.basePipeSpeed;
   private pipeInterval = 1000; // How often pipes are spawned (ms)
   private floorHeight = 112;
   private birdX = 260;
@@ -21,6 +22,9 @@ export class GameRoom extends Room<GameState> {
   private worldWidth = 1280;
   private worldHeight = 720;
   private pipeNoiseAmplitude = 200; // px
+  private readonly stageCount = 5;
+  private readonly stageDurationSeconds = 20; // seconds per stage escalation
+  private readonly stageSpeedIncrement = 0.2; // +20% pipe speed per stage
 
   // Debug: expose internal schema refId when logging
   private refIdOf(obj: any) {
@@ -38,6 +42,27 @@ export class GameRoom extends Room<GameState> {
 
   private getCurrentPipeGap(): number {
     return Math.max(this.minPipeGap, this.maxPipeGap - (this.state.difficulty * this.pipeGapShrinkPerSec));
+  }
+
+  private getStageForDifficulty(elapsedSeconds: number): number {
+    if (!this.state.running) {
+      return 0;
+    }
+
+    const stageIndex = Math.floor(elapsedSeconds / this.stageDurationSeconds);
+    return Math.min(this.stageCount, stageIndex + 1);
+  }
+
+  private applyStage(stage: number) {
+    const clampedStage = Math.max(0, Math.min(this.stageCount, Math.floor(stage)));
+    if (this.state.stage !== clampedStage) {
+      this.state.stage = clampedStage;
+      logger.info(`Stage set to ${clampedStage}`);
+    }
+
+    const multiplier = clampedStage <= 0 ? 1 : 1 + this.stageSpeedIncrement * (clampedStage - 1);
+    this.pipeSpeed = this.basePipeSpeed * multiplier;
+    logger.info(`Pipe speed adjusted to ${this.pipeSpeed.toFixed(2)} (stage ${clampedStage})`);
   }
 
   onCreate(): void {
@@ -158,6 +183,7 @@ export class GameRoom extends Room<GameState> {
     this.state.winnerId = "";
     this.clearLevel();
     this.state.difficulty = 0;
+    this.applyStage(1);
 
     for (const [, player] of this.state.players) {
       player.alive = true;
@@ -216,10 +242,18 @@ export class GameRoom extends Room<GameState> {
 
   private update(delta: number) {
     if (!this.state.running) {
+      if (this.state.stage !== 0) {
+        this.applyStage(0);
+      }
       return;
     }
 
     this.state.difficulty += delta;
+    const stageForDifficulty = this.getStageForDifficulty(this.state.difficulty);
+    if (stageForDifficulty !== this.state.stage) {
+      this.applyStage(stageForDifficulty);
+    }
+
     this.elapsedSincePipe += delta * 1000;
     if (this.elapsedSincePipe >= this.pipeInterval) {
       this.elapsedSincePipe = 0;
@@ -295,6 +329,7 @@ export class GameRoom extends Room<GameState> {
       logger.info("Game over - all players died");
       this.state.running = false;
       this.state.winnerId = "";
+      this.applyStage(0);
       // Defer clearing to next tick to avoid delete+patch ordering issues
       this.deferClearLevel();
       this.setAllPlayersReady(false);
@@ -306,6 +341,7 @@ export class GameRoom extends Room<GameState> {
       logger.info("Multiplayer game over - winner:", this.findPlayerId(alivePlayers[0]));
       this.state.running = false;
       this.state.winnerId = this.findPlayerId(alivePlayers[0]);
+      this.applyStage(0);
       // Defer clearing to next tick to avoid delete+patch ordering issues
       this.deferClearLevel();
       this.setAllPlayersReady(false);

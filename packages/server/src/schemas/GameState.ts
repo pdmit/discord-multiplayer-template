@@ -55,4 +55,7 @@ export class GameState extends Schema {
 
   @type("number")
   difficulty = 0;
+
+  @type("number")
+  stage = 0;
 }

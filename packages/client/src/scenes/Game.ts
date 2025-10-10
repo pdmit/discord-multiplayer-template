@@ -49,10 +49,15 @@ export class Game extends Scene {
   private localPlayerId = "";
   private localPlayerReady = false;
   private lastKnownRunning = false;
+  private lastKnownStage = 0;
   private readonly pipeGap = 50;
   private readonly pipeHeight = 315;
   private readonly birdX = 260;
-  private readonly scrollSpeed = 220;
+  private readonly baseScrollSpeed = 220;
+  private currentScrollSpeed = this.baseScrollSpeed;
+  private readonly stageSpeedIncrement = 0.2;
+  private readonly maxStage = 5;
+  private readonly stageDurationSeconds = 20;
   private readonly pipeLerpSpeed = 12;
   private updatingActivity = false;
   private pendingActivityUpdate = false;
@@ -79,7 +84,20 @@ export class Game extends Scene {
   }
 
   update(_time: number, delta: number) {
-    const scroll = (this.scrollSpeed * delta) / 1000;
+    const stageValue = this.getCurrentStageValue();
+    if (stageValue !== this.lastKnownStage) {
+      this.lastKnownStage = stageValue;
+      console.log("Detected stage change:", stageValue);
+      this.refreshScoreboard();
+      this.updateStatusMessage();
+    }
+
+    const clampedStage = Math.max(0, Math.min(this.maxStage, stageValue));
+    const stageMultiplier = clampedStage <= 0 ? 1 : 1 + this.stageSpeedIncrement * (clampedStage - 1);
+    const targetScrollSpeed = this.baseScrollSpeed * stageMultiplier;
+    this.currentScrollSpeed = Phaser.Math.Linear(this.currentScrollSpeed, targetScrollSpeed, 0.1);
+
+    const scroll = (this.currentScrollSpeed * delta) / 1000;
     this.background.tilePositionX += scroll;
     this.ground.tilePositionX += scroll;
 
@@ -586,9 +604,13 @@ export class Game extends Scene {
       if (changes && Array.isArray(changes)) {
         changes.forEach((change) => {
           console.log("State change field:", change.field, "value:", change.value);
-          if (change.field === "running" || change.field === "winnerId") {
-            console.log("Updating status message due to running/winnerId change");
+          if (change.field === "running" || change.field === "winnerId" || change.field === "stage") {
+            console.log("Updating status message due to state change:", change.field);
             this.updateStatusMessage();
+          }
+          if (change.field === "stage") {
+            console.log("Stage changed, refreshing scoreboard");
+            this.refreshScoreboard();
           }
         });
       } else {
@@ -766,6 +788,31 @@ export class Game extends Scene {
     this.pipeSprites.delete(id);
   }
 
+  private getCurrentStageValue(): number {
+    if (!this.room || !this.room.state) {
+      return 0;
+    }
+
+    const running = Boolean(this.room.state.running);
+    const difficultyValue = Number((this.room.state as any).difficulty ?? 0);
+    const derivedStage = running
+      ? Math.min(this.maxStage, Math.floor(difficultyValue / this.stageDurationSeconds) + 1)
+      : 0;
+
+    const rawStage = Number((this.room.state as any).stage);
+    let stageValue = Number.isFinite(rawStage) ? rawStage : derivedStage;
+
+    if (running && stageValue <= 0) {
+      stageValue = derivedStage;
+    }
+
+    if (!running) {
+      stageValue = 0;
+    }
+
+    return Math.max(0, Math.min(this.maxStage, Math.floor(stageValue)));
+  }
+
   private refreshScoreboard() {
     if (!this.room) {
       return;
@@ -791,10 +838,17 @@ export class Game extends Scene {
     });
 
     const running = this.room.state.running as boolean;
+    const stageValue = this.getCurrentStageValue();
+    const clampedStage = Math.max(0, Math.min(this.maxStage, stageValue));
 
     if (players.length === 0) {
       this.scoreText.setText("Waiting for players...");
     } else {
+      const headerLines: string[] = [];
+      if (running) {
+        headerLines.push(`Stage ${Math.max(1, clampedStage)}/${this.maxStage}`);
+      }
+
       const lines = players.map((player) => {
         const prefix = player.isLocal ? "▶ " : "";
         if (running) {
@@ -805,7 +859,7 @@ export class Game extends Scene {
         const status = player.ready ? "✅ Ready" : "⌛ Waiting";
         return `${prefix}${player.name} ${status}`;
       });
-      this.scoreText.setText(lines.join("\n"));
+      this.scoreText.setText([...headerLines, ...lines].join("\n"));
     }
 
     this.scoreBackdrop.width = this.scoreText.width + 40;
@@ -822,9 +876,15 @@ export class Game extends Scene {
     const running = this.room.state.running;
     const winnerId = this.room.state.winnerId as string;
     const playerCount = this.getPlayerCount();
+    const stageValue = this.getCurrentStageValue();
+    const stageLabel = stageValue > 0 ? `${stageValue}/${this.maxStage}` : "Lobby";
+    const difficultyValue = Number((this.room.state as any).difficulty ?? 0);
+    const difficultyText = difficultyValue.toFixed(1);
 
     // Tell us what the state of the room is right now
-    this.roomStatusText?.setText("Running: "+this.room.state.running+" Players: "+this.room.state.players.size+" Difficulty: "+this.room.state.difficulty);
+    this.roomStatusText?.setText(
+      `Running: ${running} Players: ${playerCount} Stage: ${stageLabel} Difficulty: ${difficultyText}`,
+    );
 
     if (!running) {
       const readyCount = this.getReadyCount();
@@ -860,10 +920,11 @@ export class Game extends Scene {
         this.statusText.setText("Waiting for players to join...");
       }
     } else {
+      const stagePrefix = stageValue > 0 ? `Stage ${stageValue}/${this.maxStage}\n` : "";
       if (playerCount === 1) {
-        this.statusText.setText("Flap to stay alive! Try to get a high score!");
+        this.statusText.setText(`${stagePrefix}Flap to stay alive! Try to get a high score!`);
       } else {
-        this.statusText.setText("Flap to stay alive! Last bird standing wins.");
+        this.statusText.setText(`${stagePrefix}Flap to stay alive! Last bird standing wins.`);
       }
     }
     this.updateReadyUI();
