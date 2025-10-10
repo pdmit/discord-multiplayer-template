@@ -8,7 +8,7 @@ export class GameRoom extends Room<GameState> {
   private gravity = 800; // Reduced gravity for testing
   private flapVelocity = -250;
   private pipeSpeed = 220;
-  private pipeInterval = 1800;
+  private pipeInterval = 1000; // How often pipes are spawned (ms)
   private floorHeight = 112;
   private birdX = 260;
   private birdHalfWidth = 17;
@@ -20,6 +20,7 @@ export class GameRoom extends Room<GameState> {
   private skins: Array<PlayerState["skin"]> = ["yellow", "blue", "red"];
   private worldWidth = 1280;
   private worldHeight = 720;
+  private pipeNoiseAmplitude = 200; // px
 
   // Debug: expose internal schema refId when logging
   private refIdOf(obj: any) {
@@ -202,9 +203,10 @@ export class GameRoom extends Room<GameState> {
     const usableMax = Math.max(centerMin, centerMax);
     //const center = usableMin + Math.random() * Math.max(0, usableMax - usableMin);
     const center = this.worldHeight / 2; // for testing, keep pipes centered
+    const pipeCenter = center + ((Math.random() - 0.5) * this.pipeNoiseAmplitude); // add some noise
 
-    pipe.Ybottom = center + gap / 2;                 // bottom pipe's top Y
-    pipe.Ytop = center - gap / 2 - this.pipeHeight;  // top pipe's top Y
+    pipe.Ybottom = pipeCenter + gap / 2;                 // bottom pipe's top Y
+    pipe.Ytop = pipeCenter - gap / 2 - this.pipeHeight;  // top pipe's top Y
 
     this.state.pipes.push(pipe);
     logger.info(
