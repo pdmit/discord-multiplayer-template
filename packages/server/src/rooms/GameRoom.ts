@@ -68,6 +68,7 @@ export class GameRoom extends Room<GameState> {
   onCreate(): void {
     // Properly register the state with Colyseus (ensures correct change-tree + ref ordering)
     this.setState(new GameState());
+    this.populateSkinOptions();
     this.setSimulationInterval((deltaTime) => this.update(deltaTime / 1000));
 
     this.onMessage("flap", (client) => {
@@ -95,6 +96,47 @@ export class GameRoom extends Room<GameState> {
       logger.info(`Setting player ${client.sessionId} ready state to: ${newReadyState}`);
       player.ready = newReadyState;
       this.tryStartRound();
+    });
+
+    this.onMessage("selectSkin", (client, message: { skin?: PlayerState["skin"] }) => {
+      const skin = message?.skin;
+      const player = this.state.players.get(client.sessionId);
+
+      if (!player) {
+        logger.warn(`selectSkin rejected - player not found for ${client.sessionId}`);
+        return;
+      }
+
+      if (typeof skin !== "string") {
+        logger.warn(`selectSkin rejected - invalid payload from ${client.sessionId}:`, message);
+        return;
+      }
+
+      if (!this.skins.includes(skin)) {
+        logger.warn(`selectSkin rejected - skin "${skin}" not in allowed list for ${client.sessionId}`);
+        return;
+      }
+
+      if (this.state.running) {
+        logger.warn(`selectSkin rejected - game running (player ${client.sessionId})`);
+        return;
+      }
+
+      const ownerSessionId = this.findSkinOwner(skin);
+      if (ownerSessionId && ownerSessionId !== client.sessionId) {
+        logger.warn(
+          `selectSkin rejected - skin "${skin}" already taken by ${ownerSessionId}, requested by ${client.sessionId}`,
+        );
+        return;
+      }
+
+      if (player.skin === skin) {
+        return;
+      }
+
+      logger.info(`Player ${client.sessionId} selected skin "${skin}"`);
+      player.skin = skin;
+      player.ready = false;
     });
   }
 
@@ -132,22 +174,42 @@ export class GameRoom extends Room<GameState> {
   }
 
   private assignSkin(): PlayerState["skin"] {
-    const activeSkins = new Map<PlayerState["skin"], number>();
+    const takenSkins = new Set<PlayerState["skin"]>();
     for (const [, player] of this.state.players) {
-      activeSkins.set(player.skin, (activeSkins.get(player.skin) || 0) + 1);
+      if (player.skin) {
+        takenSkins.add(player.skin);
+      }
     }
 
-    let selected: PlayerState["skin"] = this.skins[0];
-    let minCount = Number.MAX_SAFE_INTEGER;
-    this.skins.forEach((skin) => {
-      const count = activeSkins.get(skin) || 0;
-      if (count < minCount) {
-        minCount = count;
-        selected = skin;
+    for (const skin of this.skins) {
+      if (!takenSkins.has(skin)) {
+        return skin;
       }
-    });
+    }
 
-    return selected;
+    const fallback = this.skins[0] ?? "yellow";
+    logger.warn(`All preferred skins in use. Falling back to "${fallback}"`);
+    return fallback;
+  }
+
+  private findSkinOwner(skin: PlayerState["skin"]): string | null {
+    for (const [sessionId, player] of this.state.players) {
+      if (player.skin === skin) {
+        return sessionId;
+      }
+    }
+
+    return null;
+  }
+
+  private populateSkinOptions() {
+    while (this.state.skinOptions.length > 0) {
+      this.state.skinOptions.pop();
+    }
+
+    for (const skin of this.skins) {
+      this.state.skinOptions.push(skin);
+    }
   }
 
   private clearLevel() {

@@ -5,7 +5,7 @@ export class PlayerState extends Schema {
   name = "";
 
   @type("string")
-  skin: "yellow" | "blue" | "red" = "yellow";
+  skin = "yellow";
 
   @type("number")
   y = 0;
@@ -46,6 +46,9 @@ export class GameState extends Schema {
 
   @type([PipeState])
   pipes = new ArraySchema<PipeState>();
+
+  @type(["string"])
+  skinOptions = new ArraySchema<string>();
 
   @type("boolean")
   running = false;

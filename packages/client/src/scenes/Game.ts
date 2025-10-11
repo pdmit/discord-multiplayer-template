@@ -4,7 +4,7 @@ import { discordSdk, getUserName } from "../utils/discordSDK";
 
 type PlayerState = {
   name: string;
-  skin: "yellow" | "blue" | "red";
+  skin: string;
   y: number;
   velocity: number;
   alive: boolean;
@@ -18,6 +18,14 @@ type PipeState = {
   x: number;
   Ytop: number;
   Ybottom: number;
+};
+
+type SkinSlotElements = {
+  container: Phaser.GameObjects.Container;
+  background: Phaser.GameObjects.Rectangle;
+  preview: Phaser.GameObjects.Image;
+  label: Phaser.GameObjects.Text;
+  ownerText: Phaser.GameObjects.Text;
 };
 
 export class Game extends Scene {
@@ -35,7 +43,10 @@ export class Game extends Scene {
       targetBottomY: number;
     }
   >();
-  private playerCache = new Map<string, { alive: boolean; score: number; ready: boolean }>();
+  private playerCache = new Map<string, { alive: boolean; score: number; ready: boolean; skin: string }>();
+  private skinOptions: string[] = [];
+  private skinSelectionContainer?: Phaser.GameObjects.Container;
+  private skinSlotElements = new Map<string, SkinSlotElements>();
   private scoreText!: Phaser.GameObjects.Text;
   private scoreBackdrop!: Phaser.GameObjects.Rectangle;
   private statusText!: Phaser.GameObjects.Text;
@@ -512,6 +523,277 @@ export class Game extends Scene {
     this.setupGameOverScreen();
   }
 
+  private updateSkinOptionsFromState() {
+    if (!this.room || !this.room.state) {
+      return;
+    }
+
+    const stateOptions = (this.room.state as any).skinOptions as Array<string> | undefined;
+    if (!stateOptions) {
+      return;
+    }
+
+    const nextOptions = Array.from(stateOptions);
+    if (!this.haveSkinOptionsChanged(nextOptions)) {
+      return;
+    }
+
+    this.skinOptions = nextOptions;
+    this.rebuildSkinSelection();
+    this.updateSkinSlots();
+  }
+
+  private haveSkinOptionsChanged(next: string[]) {
+    if (this.skinOptions.length !== next.length) {
+      return true;
+    }
+
+    for (let i = 0; i < next.length; i += 1) {
+      if (this.skinOptions[i] !== next[i]) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private rebuildSkinSelection() {
+    this.skinSelectionContainer?.destroy(true);
+    this.skinSelectionContainer = undefined;
+    this.skinSlotElements.clear();
+
+    if (this.skinOptions.length === 0) {
+      return;
+    }
+
+    const width = Number(this.game.config.width);
+    const margin = 36;
+    const columns = Math.min(4, this.skinOptions.length);
+    const slotWidth = 88;
+    const slotHeight = 104;
+    const spacingX = 14;
+    const spacingY = 20;
+    const rows = Math.ceil(this.skinOptions.length / columns);
+    const gridWidth = columns * slotWidth + (columns - 1) * spacingX;
+    const gridHeight = rows * slotHeight + (rows - 1) * spacingY;
+    const headerHeight = 80;
+    const panelPadding = 24;
+    const panelWidth = gridWidth + panelPadding * 2;
+    const panelHeight = headerHeight + gridHeight + panelPadding;
+    const containerX = width - panelWidth / 2 - margin;
+    const containerY = 260;
+
+    const container = this.add.container(containerX, containerY);
+    container.setDepth(12);
+
+    const background = this.add
+      .rectangle(0, 0, panelWidth, panelHeight, 0x000000, 0.55)
+      .setStrokeStyle(2, 0xffffff, 0.35)
+      .setOrigin(0.5);
+    container.add(background);
+
+    const panelTop = -panelHeight / 2;
+    const title = this.add
+      .text(0, panelTop + 28, "Choose Your Bird", {
+        fontFamily: "Arial Black",
+        fontSize: 22,
+        color: "#ffffff",
+        stroke: "#000000",
+        strokeThickness: 6,
+        align: "center",
+      })
+      .setOrigin(0.5);
+    container.add(title);
+
+    const subtitle = this.add
+      .text(0, panelTop + 56, "Each skin can only be used once", {
+        fontFamily: "Arial",
+        fontSize: 16,
+        color: "#dddddd",
+        stroke: "#000000",
+        strokeThickness: 4,
+        align: "center",
+      })
+      .setOrigin(0.5);
+    container.add(subtitle);
+
+    const gridStartY = panelTop + headerHeight + slotHeight / 2;
+    const gridStartX = -gridWidth / 2 + slotWidth / 2;
+
+    this.skinOptions.forEach((skin, index) => {
+      const row = Math.floor(index / columns);
+      const col = index % columns;
+      const x = gridStartX + col * (slotWidth + spacingX);
+      const y = gridStartY + row * (slotHeight + spacingY);
+
+      const slotContainer = this.add.container(x, y);
+      const backgroundRect = this.add
+        .rectangle(0, 0, slotWidth, slotHeight, 0x1a1a1a, 0.62)
+        .setOrigin(0.5)
+        .setStrokeStyle(2, 0xffffff, 0.4)
+        .setInteractive({ useHandCursor: true });
+      backgroundRect.on("pointerdown", () => this.requestSkinSelection(skin));
+
+      const preview = this.add.image(0, -18, this.getBirdTexture(skin)).setScale(0.9);
+
+      const label = this.add
+        .text(0, slotHeight / 2 - 32, this.formatSkinLabel(skin), {
+          fontFamily: "Arial Black",
+          fontSize: 16,
+          color: "#ffffff",
+          stroke: "#000000",
+          strokeThickness: 4,
+          align: "center",
+        })
+        .setOrigin(0.5);
+
+      const ownerText = this.add
+        .text(0, slotHeight / 2 - 10, "", {
+          fontFamily: "Arial",
+          fontSize: 15,
+          color: "#c0ffc0",
+          stroke: "#000000",
+          strokeThickness: 4,
+          align: "center",
+        })
+        .setOrigin(0.5);
+
+      slotContainer.add([backgroundRect, preview, label, ownerText]);
+      container.add(slotContainer);
+      this.skinSlotElements.set(skin, {
+        container: slotContainer,
+        background: backgroundRect,
+        preview,
+        label,
+        ownerText,
+      });
+    });
+
+    this.skinSelectionContainer = container;
+    const canShow = !this.room?.state?.running && this.getPlayerCount() > 0;
+    this.setSkinSelectionVisible(canShow);
+  }
+
+  private setSkinSelectionVisible(visible: boolean) {
+    if (!this.skinSelectionContainer) {
+      return;
+    }
+
+    this.skinSelectionContainer.setVisible(visible);
+    this.skinSlotElements.forEach((elements) => {
+      if (visible) {
+        elements.background.setInteractive({ useHandCursor: true });
+      } else {
+        elements.background.disableInteractive();
+      }
+    });
+
+    if (visible) {
+      this.updateSkinSlots();
+    }
+  }
+
+  private updateSkinSlots() {
+    if (!this.skinSelectionContainer) {
+      return;
+    }
+
+    const isVisible = this.skinSelectionContainer.visible;
+    const localId = this.localPlayerId;
+
+    this.skinSlotElements.forEach((elements, skin) => {
+      const owner = this.getSkinOwner(skin);
+      const ownedByLocal = owner?.sessionId === localId;
+      const takenByOther = !!owner && !ownedByLocal;
+
+      const baseFill = takenByOther ? 0x3b1a1a : ownedByLocal ? 0x1f3f2b : 0x1a1a1a;
+      const baseAlpha = takenByOther ? 0.85 : ownedByLocal ? 0.75 : 0.6;
+      elements.background.setFillStyle(baseFill, baseAlpha);
+
+      const strokeWidth = ownedByLocal ? 3 : 2;
+      const strokeColor = takenByOther ? 0xff6b6b : ownedByLocal ? 0xffd369 : 0xffffff;
+      const strokeAlpha = takenByOther ? 0.65 : ownedByLocal ? 0.9 : 0.4;
+      elements.background.setStrokeStyle(strokeWidth, strokeColor, strokeAlpha);
+
+      if (!owner) {
+        elements.ownerText.setText("Available");
+        elements.ownerText.setColor("#b8ffc2");
+      } else if (ownedByLocal) {
+        elements.ownerText.setText("You");
+        elements.ownerText.setColor("#ffe7a6");
+      } else {
+        elements.ownerText.setText(this.formatOwnerName(owner.name));
+        elements.ownerText.setColor("#ff9393");
+      }
+
+      if (isVisible && !takenByOther && !this.room?.state?.running) {
+        elements.background.setInteractive({ useHandCursor: true });
+      } else {
+        elements.background.disableInteractive();
+      }
+
+      const previewTexture = this.getBirdTexture(skin);
+      if (previewTexture && elements.preview.texture.key !== previewTexture) {
+        elements.preview.setTexture(previewTexture);
+      }
+    });
+  }
+
+  private requestSkinSelection(skin: string) {
+    if (!this.room || !this.room.sessionId) {
+      return;
+    }
+
+    if (this.room.state?.running) {
+      return;
+    }
+
+    const owner = this.getSkinOwner(skin);
+    if (owner && owner.sessionId !== this.localPlayerId) {
+      return;
+    }
+
+    const localPlayer = this.room.state.players
+      ? (this.room.state.players.get(this.localPlayerId) as PlayerState | undefined)
+      : undefined;
+    if (localPlayer && localPlayer.skin === skin) {
+      return;
+    }
+
+    this.room.send("selectSkin", { skin });
+  }
+
+  private getSkinOwner(skin: string): { sessionId: string; name: string } | undefined {
+    if (!this.room || !this.room.state?.players) {
+      return undefined;
+    }
+
+    let owner: { sessionId: string; name: string } | undefined;
+    this.room.state.players.forEach((player: PlayerState, sessionId: string) => {
+      if (!owner && player.skin === skin) {
+        owner = { sessionId, name: player.name };
+      }
+    });
+
+    return owner;
+  }
+
+  private formatSkinLabel(skin: string) {
+    const normalized = this.normalizeSkinKey(skin);
+    if (!normalized) {
+      return "Default";
+    }
+    return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+  }
+
+  private formatOwnerName(name: string) {
+    const trimmed = name.trim();
+    if (trimmed.length <= 14) {
+      return trimmed || "Taken";
+    }
+    return `${trimmed.slice(0, 13)}...`;
+  }
+
   private setupGameOverScreen() {
     const width = Number(this.game.config.width);
     const height = Number(this.game.config.height);
@@ -820,6 +1102,7 @@ export class Game extends Scene {
 
     this.readyButtonBackground.setVisible(showLobbyUi);
     this.readyButtonLabel.setVisible(showLobbyUi);
+    this.setSkinSelectionVisible(showLobbyUi);
 
     if (showLobbyUi) {
       this.readyButtonLabel.setText(this.localPlayerReady ? "Cancel Ready" : "Ready Up");
@@ -886,6 +1169,15 @@ export class Game extends Scene {
       });
     }
 
+    this.updateSkinOptionsFromState();
+    const skinOptionsState = (this.room.state as any).skinOptions;
+    if (skinOptionsState) {
+      const skinCallbacks = $(skinOptionsState);
+      skinCallbacks.onAdd(() => this.updateSkinOptionsFromState());
+      skinCallbacks.onRemove(() => this.updateSkinOptionsFromState());
+      skinCallbacks.onChange(() => this.updateSkinOptionsFromState());
+    }
+
     $(this.room.state.players).onAdd((player: PlayerState, sessionId: string) => {
       const sprite = this.playerSprites.get(sessionId);
       if (!sprite) {
@@ -932,6 +1224,9 @@ export class Game extends Scene {
             console.log("Stage changed, refreshing scoreboard");
             this.refreshScoreboard();
           }
+          if (change.field === "skinOptions") {
+            this.updateSkinOptionsFromState();
+          }
         });
       } else {
         console.log("State change callback received non-array data:", changes);
@@ -946,7 +1241,7 @@ export class Game extends Scene {
 
     const sprite = this.add.sprite(this.birdX, player.y, this.getBirdTexture(player.skin));
     sprite.setDepth(5);
-    sprite.play(this.getBirdAnimation(player.skin));
+    this.applySkinToSprite(sprite, player.skin);
 
     if (sessionId === this.localPlayerId) {
       sprite.setScale(1.05);
@@ -954,7 +1249,7 @@ export class Game extends Scene {
     }
 
     this.playerSprites.set(sessionId, sprite);
-    this.playerCache.set(sessionId, { alive: player.alive, score: player.score, ready: player.ready });
+    this.playerCache.set(sessionId, { alive: player.alive, score: player.score, ready: player.ready, skin: player.skin });
 
     if (sessionId === this.localPlayerId) {
       this.localPlayerReady = player.ready;
@@ -965,6 +1260,7 @@ export class Game extends Scene {
     this.refreshScoreboard();
     this.updateStatusMessage();
     this.updateReadyUI();
+    this.updateSkinSlots();
 
     console.log("Player added successfully. Cache now has:", this.playerCache.size, "players");
   }
@@ -982,6 +1278,7 @@ export class Game extends Scene {
     this.refreshScoreboard();
     this.updateStatusMessage();
     this.updateReadyUI();
+    this.updateSkinSlots();
   }
 
   private syncPlayer(sessionId: string, player: PlayerState, changes: any[]) {
@@ -997,6 +1294,7 @@ export class Game extends Scene {
 
     const cached = this.playerCache.get(sessionId);
     const readyChanged = !cached || cached.ready !== player.ready;
+    const skinChanged = !cached || cached.skin !== player.skin;
     if (cached) {
       if (cached.alive && !player.alive && sessionId === this.localPlayerId) {
         this.sound.play("hit", { volume: 0.4 });
@@ -1005,6 +1303,10 @@ export class Game extends Scene {
       if (player.score > cached.score && sessionId === this.localPlayerId) {
         this.sound.play("point", { volume: 0.5 });
       }
+    }
+
+    if (skinChanged) {
+      this.applySkinToSprite(sprite, player.skin);
     }
 
     if (player.alive) {
@@ -1018,7 +1320,7 @@ export class Game extends Scene {
       sprite.setAlpha(0.8);
     }
 
-    this.playerCache.set(sessionId, { alive: player.alive, score: player.score, ready: player.ready });
+    this.playerCache.set(sessionId, { alive: player.alive, score: player.score, ready: player.ready, skin: player.skin });
     if (sessionId === this.localPlayerId) {
       this.localPlayerReady = player.ready;
       //console.log("Updated local player ready state to:", player.ready);
@@ -1036,28 +1338,53 @@ export class Game extends Scene {
       console.log("Ready state changed for player:", sessionId, "to:", player.ready);
       this.updateReadyUI();
     }
+    if (skinChanged) {
+      this.updateSkinSlots();
+    }
+  }
+
+  private applySkinToSprite(sprite: Phaser.GameObjects.Sprite, skin: string) {
+    const textureKey = this.getBirdTexture(skin);
+    if (textureKey && sprite.texture?.key !== textureKey) {
+      sprite.setTexture(textureKey);
+    }
+
+    const animationKey = this.getBirdAnimation(skin);
+    if (animationKey) {
+      const currentAnimKey = sprite.anims?.currentAnim?.key;
+      if (currentAnimKey !== animationKey) {
+        sprite.play(animationKey, true);
+      }
+    } else if (sprite.anims?.isPlaying) {
+      sprite.anims.stop();
+    }
   }
 
   private getBirdTexture(skin: PlayerState["skin"]) {
-    switch (skin) {
-      case "blue":
-        return "bluebird-midflap";
-      case "red":
-        return "redbird-midflap";
-      default:
-        return "yellowbird-midflap";
+    const normalized = this.normalizeSkinKey(skin);
+    const candidate = normalized ? `${normalized}bird-midflap` : "";
+    if (candidate && this.textures.exists(candidate)) {
+      return candidate;
     }
+    if (this.textures.exists("yellowbird-midflap")) {
+      return "yellowbird-midflap";
+    }
+
+    const fallbackKeys = this.textures.getTextureKeys();
+    return fallbackKeys.length > 0 ? fallbackKeys[0] : "";
   }
 
   private getBirdAnimation(skin: PlayerState["skin"]) {
-    switch (skin) {
-      case "blue":
-        return "blue_fly";
-      case "red":
-        return "red_fly";
-      default:
-        return "yellow_fly";
+    const normalized = this.normalizeSkinKey(skin);
+    const candidate = normalized ? `${normalized}_fly` : "";
+    if (candidate && this.anims.exists(candidate)) {
+      return candidate;
     }
+    return this.anims.exists("yellow_fly") ? "yellow_fly" : "";
+  }
+
+  private normalizeSkinKey(skin: string) {
+    return (skin ?? "").toString().trim().toLowerCase();
   }
 
   private addPipe(pipe: PipeState) {
