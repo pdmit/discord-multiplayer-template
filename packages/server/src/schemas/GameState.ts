@@ -7,6 +7,10 @@ export class PlayerState extends Schema {
   @type("string")
   skin = "yellow";
 
+  // spectator role support: "bird" (default) or "gm" (spectator)
+  @type("string")
+  role: "bird" | "gm" = "bird";
+
   @type("number")
   y = 0;
 
@@ -61,4 +65,8 @@ export class GameState extends Schema {
 
   @type("number")
   stage = 0;
+
+  // Optional convenience field to track who is GM (empty if none)
+  @type("string")
+  gameMasterId: string = "";
 }

@@ -11,6 +11,7 @@ type PlayerState = {
   score: number;
   lastPassedPipeId: number;
   ready: boolean;
+  role?: "bird" | "gm"; // optional for backward compat
 };
 
 type PipeState = {
@@ -57,6 +58,8 @@ export class Game extends Scene {
   private gameOverText?: Phaser.GameObjects.Text;
   private restartButton?: Phaser.GameObjects.Rectangle;
   private restartButtonLabel?: Phaser.GameObjects.Text;
+  private returnButton?: Phaser.GameObjects.Rectangle;
+  private returnButtonLabel?: Phaser.GameObjects.Text;
   private localPlayerId = "";
   private localPlayerReady = false;
   private lastKnownRunning = false;
@@ -74,6 +77,8 @@ export class Game extends Scene {
   private pendingActivityUpdate = false;
   private roomStatusText?: Phaser.GameObjects.Text;
   private readonly showDebugInfo: boolean;
+  private joinRole: "bird" | "gm" = "bird";
+  private localPlayerIsGM: boolean = false;
 
   private stagePopup?: Phaser.GameObjects.Container;
   private volumeSlider?: Phaser.GameObjects.Rectangle;
@@ -97,6 +102,14 @@ export class Game extends Scene {
       queryDebug === "1" ||
       queryDebug === "true" ||
       params.has("debug");
+  }
+
+  init(data?: { role?: "bird" | "gm" }) {
+    if (data?.role === "gm") {
+      this.joinRole = "gm";
+    } else {
+      this.joinRole = "bird";
+    }
   }
 
   async create() {
@@ -835,11 +848,11 @@ export class Game extends Scene {
     this.gameOverScreen.add(scoreDisplay);
 
     // Restart button
-    const buttonWidth = 200;
+    const buttonWidth = 240;
     const buttonHeight = 60;
-    const buttonY = 80;
+    const playAgainY = 80;
 
-    this.restartButton = this.add.rectangle(0, buttonY, buttonWidth, buttonHeight, 0x27ae60, 0.9);
+    this.restartButton = this.add.rectangle(0, playAgainY, buttonWidth, buttonHeight, 0x27ae60, 0.9);
     this.restartButton.setOrigin(0.5);
     this.restartButton.setInteractive({ useHandCursor: true });
     this.restartButton.on("pointerdown", () => this.restartGame());
@@ -851,7 +864,7 @@ export class Game extends Scene {
     });
     this.gameOverScreen.add(this.restartButton);
 
-    this.restartButtonLabel = this.add.text(0, buttonY, "Play Again", {
+    this.restartButtonLabel = this.add.text(0, playAgainY, "Play Again", {
       fontFamily: "Arial Black",
       fontSize: 24,
       color: "#ffffff",
@@ -861,6 +874,31 @@ export class Game extends Scene {
     });
     this.restartButtonLabel.setOrigin(0.5);
     this.gameOverScreen.add(this.restartButtonLabel);
+
+    // Return to Menu button
+    const returnY = playAgainY + 75;
+    this.returnButton = this.add.rectangle(0, returnY, buttonWidth, buttonHeight, 0x8e44ad, 0.9);
+    this.returnButton.setOrigin(0.5);
+    this.returnButton.setInteractive({ useHandCursor: true });
+    this.returnButton.on("pointerdown", () => this.returnToMenu());
+    this.returnButton.on("pointerover", () => {
+      this.returnButton?.setFillStyle(0x9b59b6, 0.95);
+    });
+    this.returnButton.on("pointerout", () => {
+      this.returnButton?.setFillStyle(0x8e44ad, 0.9);
+    });
+    this.gameOverScreen.add(this.returnButton);
+
+    this.returnButtonLabel = this.add.text(0, returnY, "Return to Menu", {
+      fontFamily: "Arial Black",
+      fontSize: 24,
+      color: "#ffffff",
+      stroke: "#000000",
+      strokeThickness: 4,
+      align: "center",
+    });
+    this.returnButtonLabel.setOrigin(0.5);
+    this.gameOverScreen.add(this.returnButtonLabel);
   }
 
   private setupInput() {
@@ -876,6 +914,11 @@ export class Game extends Scene {
     }
 
     if (pointer && this.isPointerOverVolumeUI(pointer)) {
+      return;
+    }
+
+    // Spectators do not flap
+    if (this.localPlayerIsGM) {
       return;
     }
 
@@ -1078,7 +1121,8 @@ export class Game extends Scene {
     const running = this.room.state.running as boolean;
     const playerCount = this.getPlayerCount();
     const readyCount = this.getReadyCount();
-    const showLobbyUi = !running && playerCount > 0; // Change this from a conditional function to a variable that is set before game start/after game over
+    // Do not show Ready UI for spectators (GM)
+    const showLobbyUi = !running && playerCount > 0 && !this.localPlayerIsGM;
 
     console.log("Ready UI state:", {
       running,
@@ -1102,7 +1146,7 @@ export class Game extends Scene {
 
     this.readyButtonBackground.setVisible(showLobbyUi);
     this.readyButtonLabel.setVisible(showLobbyUi);
-    this.setSkinSelectionVisible(showLobbyUi);
+    this.setSkinSelectionVisible(showLobbyUi && !this.localPlayerIsGM);
 
     if (showLobbyUi) {
       this.readyButtonLabel.setText(this.localPlayerReady ? "Cancel Ready" : "Ready Up");
@@ -1125,6 +1169,7 @@ export class Game extends Scene {
     try {
       this.room = await client.joinOrCreate("game", {
         name: getUserName(),
+        role: this.joinRole,
       });
       this.localPlayerId = this.room.sessionId;
       console.log("Connected to room, sessionId:", this.localPlayerId);
@@ -1133,6 +1178,22 @@ export class Game extends Scene {
       console.log(`Could not connect with the server: ${e}`);
       this.scoreText.setText("Connection failed");
     }
+  }
+
+  private async returnToMenu() {
+    try {
+      if (this.room) {
+        await this.room.leave();
+      }
+    } catch (e) {
+      console.warn("Error leaving room while returning to menu:", e);
+    }
+
+    // Clean up some UI elements explicitly
+    this.gameOverScreen?.setVisible(false);
+
+    // Transition back to main menu for role re-selection
+    this.scene.start("MainMenu");
   }
 
   private registerStateListeners() {
@@ -1238,25 +1299,31 @@ export class Game extends Scene {
 
   private addPlayer(sessionId: string, player: PlayerState) {
     console.log("Adding player:", sessionId, "with ready state:", player.ready);
+    const isGM = (player.role as any) === "gm";
+    if (!isGM) {
+      const sprite = this.add.sprite(this.birdX, player.y, this.getBirdTexture(player.skin));
+      sprite.setDepth(5);
+      this.applySkinToSprite(sprite, player.skin);
 
-    const sprite = this.add.sprite(this.birdX, player.y, this.getBirdTexture(player.skin));
-    sprite.setDepth(5);
-    this.applySkinToSprite(sprite, player.skin);
+      if (sessionId === this.localPlayerId) {
+        sprite.setScale(1.05);
+        sprite.setTint(0xffffaa);
+      }
 
-    if (sessionId === this.localPlayerId) {
-      sprite.setScale(1.05);
-      sprite.setTint(0xffffaa);
+      this.playerSprites.set(sessionId, sprite);
     }
 
-    this.playerSprites.set(sessionId, sprite);
     this.playerCache.set(sessionId, { alive: player.alive, score: player.score, ready: player.ready, skin: player.skin });
 
     if (sessionId === this.localPlayerId) {
       this.localPlayerReady = player.ready;
-      console.log("Set local player ready state to:", player.ready);
+      this.localPlayerIsGM = isGM;
+      console.log("Set local player ready state to:", player.ready, "isGM:", isGM);
     }
 
-    this.syncPlayer(sessionId, player, []);
+    if (!isGM) {
+      this.syncPlayer(sessionId, player, []);
+    }
     this.refreshScoreboard();
     this.updateStatusMessage();
     this.updateReadyUI();
@@ -1465,7 +1532,7 @@ export class Game extends Scene {
       return;
     }
 
-    const players: Array<{ name: string; score: number; alive: boolean; ready: boolean; isLocal: boolean }> = [];
+    const players: Array<{ name: string; score: number; alive: boolean; ready: boolean; isLocal: boolean; role?: PlayerState["role"] }> = [];
 
     this.room.state.players.forEach((player: PlayerState, sessionId: string) => {
       players.push({
@@ -1474,6 +1541,7 @@ export class Game extends Scene {
         alive: player.alive,
         ready: player.ready,
         isLocal: sessionId === this.localPlayerId,
+        role: player.role,
       });
     });
 
@@ -1497,6 +1565,10 @@ export class Game extends Scene {
       }
 
       const lines = players.map((player) => {
+        // Game Master spectates only
+        if ((player as any).role === "gm") {
+          return `${player.isLocal ? "* " : ""}${player.name} (GM) — Spectating`;
+        }
         const prefix = player.isLocal ? "▶ " : "";
         if (running) {
           const status = player.alive ? "🟢" : "✖";
@@ -1589,8 +1661,10 @@ export class Game extends Scene {
     }
 
     let count = 0;
-    this.room.state.players.forEach(() => {
-      count += 1;
+    this.room.state.players.forEach((player: PlayerState) => {
+      if ((player.role as any) !== "gm") {
+        count += 1;
+      }
     });
     return count;
   }
@@ -1599,9 +1673,11 @@ export class Game extends Scene {
     if (!this.room || !this.room.state || !this.room.state.players) {
       return 0;
     }
-
     let count = 0;
     this.room.state.players.forEach((player: PlayerState, sessionId: string) => {
+      if ((player.role as any) === "gm") {
+        return;
+      }
       if (player.ready) {
         count += 1;
         console.log("Player", sessionId, "is ready");

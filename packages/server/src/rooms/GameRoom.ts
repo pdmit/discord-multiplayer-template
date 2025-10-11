@@ -44,6 +44,17 @@ export class GameRoom extends Room<GameState> {
     return Math.max(this.minPipeGap, this.maxPipeGap - (this.state.difficulty * this.pipeGapShrinkPerSec));
   }
 
+  private hasGameMaster(): boolean {
+    if (this.state.gameMasterId) {
+      // quick path if tracked
+      return Array.from(this.state.players.keys()).includes(this.state.gameMasterId);
+    }
+    for (const [, p] of this.state.players) {
+      if ((p as any).role === "gm") return true;
+    }
+    return false;
+  }
+
   private getStageForDifficulty(elapsedSeconds: number): number {
     if (!this.state.running) {
       return 0;
@@ -77,6 +88,11 @@ export class GameRoom extends Room<GameState> {
         return;
       }
 
+      // Ignore flaps from spectators (Game Master)
+      if ((player as any).role === "gm") {
+        return;
+      }
+
       if (!this.state.running || !player.alive) {
         return;
       }
@@ -92,6 +108,12 @@ export class GameRoom extends Room<GameState> {
         return;
       }
 
+      // Spectators cannot ready up
+      if ((player as any).role === "gm") {
+        logger.warn(`Rejected setReady - spectator (gm) ${client.sessionId}`);
+        return;
+      }
+
       const newReadyState = Boolean(message?.ready);
       logger.info(`Setting player ${client.sessionId} ready state to: ${newReadyState}`);
       player.ready = newReadyState;
@@ -104,6 +126,12 @@ export class GameRoom extends Room<GameState> {
 
       if (!player) {
         logger.warn(`selectSkin rejected - player not found for ${client.sessionId}`);
+        return;
+      }
+
+      // Spectators (GM) cannot select a skin
+      if ((player as any).role === "gm") {
+        logger.warn(`selectSkin rejected - spectator (gm) ${client.sessionId}`);
         return;
       }
 
@@ -145,7 +173,20 @@ export class GameRoom extends Room<GameState> {
 
     const player = new PlayerState();
     player.name = options?.name || `Bird ${client.sessionId.slice(0, 4)}`;
-    player.skin = this.assignSkin();
+    // Role requested by client; enforce single GM
+    const requestedRole = options?.role === "gm" ? "gm" : "bird";
+    const canBeGm = requestedRole === "gm" && !this.hasGameMaster();
+    player.role = canBeGm ? "gm" : "bird";
+    if (canBeGm) {
+      this.state.gameMasterId = client.sessionId;
+      logger.info(`Assigned Game Master role to ${client.sessionId}`);
+    }
+    // Only birds get a skin; GM does not reserve a skin
+    if (player.role === "bird") {
+      player.skin = this.assignSkin();
+    } else {
+      player.skin = "";
+    }
     player.y = this.worldHeight / 2;
     player.velocity = 0;
     player.alive = true;
@@ -158,7 +199,13 @@ export class GameRoom extends Room<GameState> {
 
   onLeave(client: Client): void {
     logger.info(`Client left: ${client.sessionId}`);
+    const existing = this.state.players.get(client.sessionId) as any;
     this.state.players.delete(client.sessionId);
+
+    if (existing?.role === "gm" && this.state.gameMasterId === client.sessionId) {
+      this.state.gameMasterId = "";
+      logger.info(`Cleared Game Master role after ${client.sessionId} left`);
+    }
 
     if (this.state.players.size === 0) {
       this.state.running = false;
@@ -230,10 +277,20 @@ export class GameRoom extends Room<GameState> {
       return;
     }
 
+    let hasActive = false;
     for (const [, player] of this.state.players) {
+      if ((player as any).role === "gm") {
+        continue; // spectators don't block start
+      }
+      hasActive = true;
       if (!player.ready) {
         return;
       }
+    }
+
+    if (!hasActive) {
+      // no birds to play; don't start
+      return;
     }
 
     this.startRound();
@@ -248,6 +305,12 @@ export class GameRoom extends Room<GameState> {
     this.applyStage(1);
 
     for (const [, player] of this.state.players) {
+      if ((player as any).role === "gm") {
+        // Spectators don't participate in physics
+        player.alive = true;
+        player.velocity = 0;
+        continue;
+      }
       player.alive = true;
       player.y = this.worldHeight / 2;
       player.velocity = -300; // Give initial upward velocity to prevent immediate death
@@ -332,6 +395,9 @@ export class GameRoom extends Room<GameState> {
     }
 
     for (const [, player] of this.state.players) {
+      if ((player as any).role === "gm") {
+        continue; // spectators not updated
+      }
       if (!player.alive) {
         continue;
       }
@@ -383,7 +449,8 @@ export class GameRoom extends Room<GameState> {
       // }
     }
 
-    const alivePlayers = Array.from(this.state.players.values()).filter((player) => player.alive);
+    const alivePlayers = Array.from(this.state.players.values()).filter((player: any) => player.alive && player.role !== "gm");
+    const activeParticipants = Array.from(this.state.players.values()).filter((player: any) => player.role !== "gm").length;
     //logger.debug(`Update: ${alivePlayers.length} alive players out of ${this.state.players.size} total`);
 
     if (alivePlayers.length === 0) {
@@ -398,7 +465,7 @@ export class GameRoom extends Room<GameState> {
       for (const [, player] of this.state.players) {
         player.velocity = 0;
       }
-    } else if (alivePlayers.length === 1 && this.state.players.size > 1) {
+    } else if (alivePlayers.length === 1 && activeParticipants > 1) {
       // Multiplayer mode - one player wins
       logger.info("Multiplayer game over - winner:", this.findPlayerId(alivePlayers[0]));
       this.state.running = false;
