@@ -21,6 +21,13 @@ type PipeState = {
   Ybottom: number;
 };
 
+type PlacedObstacleState = {
+  id: number;
+  x: number;
+  y: number; // top Y of the sprite
+  kind: "top" | "bottom";
+};
+
 type SkinSlotElements = {
   container: Phaser.GameObjects.Container;
   background: Phaser.GameObjects.Rectangle;
@@ -44,6 +51,7 @@ export class Game extends Scene {
       targetBottomY: number;
     }
   >();
+  private placedObstacleSprites = new Map<number, { img: Phaser.GameObjects.Image; targetX: number; targetY: number }>();
   private playerCache = new Map<string, { alive: boolean; score: number; ready: boolean; skin: string }>();
   private skinOptions: string[] = [];
   private skinSelectionContainer?: Phaser.GameObjects.Container;
@@ -87,6 +95,12 @@ export class Game extends Scene {
   private volumeText?: Phaser.GameObjects.Text;
   private currentVolume: number = 0.1;  // Default volume
   private isDraggingVolume: boolean = false;
+
+  // GM tools and preview
+  private gmToolbar?: Phaser.GameObjects.Container;
+  private gmToolSelected: ("top" | "bottom") | null = null;
+  private gmPreviewSprite?: Phaser.GameObjects.Image;
+  private gmToolButtons: Map<"top" | "bottom", { bg: Phaser.GameObjects.Rectangle; txt: Phaser.GameObjects.Text }> = new Map();
 
   constructor() {
     super("Game");
@@ -161,6 +175,12 @@ export class Game extends Scene {
       sprites.bottom.y = Phaser.Math.Linear(sprites.bottom.y, sprites.targetBottomY, interpolationAlpha);
     });
 
+    // Smoothly interpolate placed obstacles towards server targets
+    this.placedObstacleSprites.forEach((entry) => {
+      entry.img.x = Phaser.Math.Linear(entry.img.x, entry.targetX, interpolationAlpha);
+      entry.img.y = Phaser.Math.Linear(entry.img.y, entry.targetY, interpolationAlpha);
+    });
+
     // Periodic sync for ready state changes and running state
     if (this.room && this.room.state && this.room.state.players) {
       let needsUIUpdate = false;
@@ -193,6 +213,12 @@ export class Game extends Scene {
         this.room.state.pipes.forEach((pipe: PipeState) => {
           this.updatePipe(pipe);
         });
+      }
+
+      // Update placed obstacles positions from state (ArraySchema supports forEach)
+      const placed = (this.room.state as any).placedObstacles as any;
+      if (currentRunning && placed && typeof placed.forEach === "function") {
+        placed.forEach((obs: PlacedObstacleState) => this.updatePlacedObstacle(obs));
       }
 
       this.room.state.players.forEach((player: PlayerState, sessionId: string) => {
@@ -534,6 +560,10 @@ export class Game extends Scene {
 
     this.updateReadyUI();
     this.setupGameOverScreen();
+
+    // Create GM toolbar (hidden until we know local is GM)
+    this.createGmToolbar();
+    this.updateGmUiVisibility();
   }
 
   private updateSkinOptionsFromState() {
@@ -903,9 +933,29 @@ export class Game extends Scene {
 
   private setupInput() {
     console.log("setupInput() called");
-    this.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => this.handleFlap(pointer));
+    this.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
+      // Right-click cancels GM placement selection
+      if (this.localPlayerIsGM && this.gmToolSelected && (pointer.rightButtonDown?.() || pointer.button === 2)) {
+        this.cancelGmSelection();
+        return;
+      }
+      if (this.localPlayerIsGM && this.gmToolSelected) {
+        // block placement clicks over GM UI/volume UI
+        if (!this.isPointerOverVolumeUI(pointer) && !this.isPointerOverGmUi(pointer)) {
+          this.placeGmObstacleAtPointer(pointer);
+          return;
+        }
+      }
+      this.handleFlap(pointer);
+    });
     this.input.keyboard?.on("keydown-SPACE", () => this.handleFlap());
     this.input.keyboard?.on("keydown-UP", () => this.handleFlap());
+    this.input.keyboard?.on("keydown-ESC", () => this.cancelGmSelection());
+    this.input.keyboard?.on("keydown-ESCAPE", () => this.cancelGmSelection());
+
+    this.input.on("pointermove", (pointer: Phaser.Input.Pointer) => {
+      this.updateGmPreviewPosition(pointer);
+    });
   }
 
   private handleFlap(pointer?: Phaser.Input.Pointer) {
@@ -1036,6 +1086,139 @@ export class Game extends Scene {
     }
 
     return this.getVolumeTrackBounds();
+  }
+
+  // GM UI
+  private createGmToolbar() {
+    const width = Number(this.game.config.width);
+    const margin = 20;
+    const panelWidth = 160;
+    const panelHeight = 160;
+    const x = width - panelWidth / 2 - margin;
+    const y = 360;
+
+    const container = this.add.container(x, y);
+    container.setDepth(50);
+
+    const bg = this.add
+      .rectangle(0, 0, panelWidth, panelHeight, 0x000000, 0.55)
+      .setStrokeStyle(2, 0xffffff, 0.35)
+      .setOrigin(0.5);
+    container.add(bg);
+
+    const title = this.add.text(0, -panelHeight / 2 + 18, "GM Tools", {
+      fontFamily: "Arial Black",
+      fontSize: 18,
+      color: "#ffffff",
+      stroke: "#000000",
+      strokeThickness: 4,
+      align: "center",
+    }).setOrigin(0.5);
+    container.add(title);
+
+    const makeBtn = (by: number, label: string, color: number, kind: "top" | "bottom") => {
+      const btn = this.add.rectangle(0, by, panelWidth - 20, 44, color, 0.9).setOrigin(0.5).setInteractive({ useHandCursor: true });
+      const txt = this.add.text(0, by, label, {
+        fontFamily: "Arial Black",
+        fontSize: 18,
+        color: "#ffffff",
+        stroke: "#000000",
+        strokeThickness: 4,
+        align: "center",
+      }).setOrigin(0.5);
+      btn.on("pointerdown", () => this.selectGmTool(kind));
+      btn.on("pointerover", () => btn.setFillStyle(color, 0.95));
+      btn.on("pointerout", () => btn.setFillStyle(color, 0.9));
+      container.add(btn);
+      container.add(txt);
+      this.gmToolButtons.set(kind, { bg: btn, txt });
+    };
+
+    makeBtn(-20, "Top Pipe", 0x34495e, "top");
+    makeBtn(30, "Bottom Pipe", 0x2c3e50, "bottom");
+
+    this.gmToolbar = container;
+    container.setVisible(false);
+  }
+
+  private updateGmUiVisibility() {
+    if (!this.gmToolbar) return;
+    this.gmToolbar.setVisible(this.localPlayerIsGM === true);
+    if (!this.localPlayerIsGM) {
+      this.selectGmTool(null);
+    }
+  }
+
+  private selectGmTool(kind: ("top" | "bottom") | null) {
+    this.gmToolSelected = kind;
+    if (!kind) {
+      this.gmPreviewSprite?.destroy();
+      this.gmPreviewSprite = undefined;
+      this.updateGmToolSelectionHighlight();
+      return;
+    }
+    const key = kind === "top" ? "pipe" : "pipe-red";
+    if (!this.gmPreviewSprite) {
+      this.gmPreviewSprite = this.add.image(0, 0, key).setDepth(49).setAlpha(0.5).setOrigin(0.5, 0);
+    } else {
+      this.gmPreviewSprite.setTexture(key);
+      this.gmPreviewSprite.setVisible(true);
+    }
+    this.gmPreviewSprite.setFlipY(kind === "top");
+    this.updateGmToolSelectionHighlight();
+  }
+
+  private updateGmToolSelectionHighlight() {
+    // Highlight selected tool button by stroke + brighter fill
+    const topBtn = this.gmToolButtons.get("top");
+    const bottomBtn = this.gmToolButtons.get("bottom");
+    const apply = (entry: { bg: Phaser.GameObjects.Rectangle; txt: Phaser.GameObjects.Text } | undefined, selected: boolean, baseColor: number) => {
+      if (!entry) return;
+      entry.bg.setStrokeStyle(selected ? 3 : 1, 0xffd369, selected ? 0.9 : 0.4);
+      entry.bg.setFillStyle(baseColor, selected ? 1.0 : 0.9);
+      entry.txt.setColor(selected ? "#ffe7a6" : "#ffffff");
+    };
+    apply(topBtn, this.gmToolSelected === "top", 0x34495e);
+    apply(bottomBtn, this.gmToolSelected === "bottom", 0x2c3e50);
+  }
+
+  private cancelGmSelection() {
+    if (!this.localPlayerIsGM) return;
+    if (!this.gmToolSelected && !this.gmPreviewSprite) return;
+    this.selectGmTool(null);
+  }
+
+  private isPointerOverGmUi(pointer: Phaser.Input.Pointer) {
+    if (!this.gmToolbar || !this.gmToolbar.visible) return false;
+    // container bounds approximation using its first child (bg rect)
+    const bg = this.gmToolbar.list.find((o) => (o as any).getBounds) as any;
+    if (!bg) return false;
+    const bounds = bg.getBounds();
+    const p = this.getPointerPosition(pointer);
+    return Phaser.Geom.Rectangle.Contains(bounds, p.x, p.y);
+  }
+
+  private updateGmPreviewPosition(pointer: Phaser.Input.Pointer) {
+    if (!this.localPlayerIsGM || !this.gmToolSelected || !this.gmPreviewSprite) return;
+    const p = this.getPointerPosition(pointer);
+    const height = Number(this.game.config.height);
+    const floorTop = height - 112; // same as base sprite y
+    const clampedX = Phaser.Math.Clamp(p.x, 0, Number(this.game.config.width));
+    const clampedY = Phaser.Math.Clamp(p.y, 0, floorTop - this.pipeHeight);
+    this.gmPreviewSprite.setPosition(clampedX, clampedY);
+  }
+
+  private placeGmObstacleAtPointer(pointer: Phaser.Input.Pointer) {
+    if (!this.room || !this.gmToolSelected) return;
+    if (!(this.room.state as any)?.running) {
+      return; // only place during active rounds so server will accept and move them
+    }
+    const p = this.getPointerPosition(pointer);
+    const height = Number(this.game.config.height);
+    const floorTop = height - 112;
+    const x = Phaser.Math.Clamp(p.x, 0, Number(this.game.config.width));
+    const y = Phaser.Math.Clamp(p.y, 0, floorTop - this.pipeHeight);
+    this.room.send("gmPlaceObstacle", { kind: this.gmToolSelected, x, y });
   }
 
   private isPointerOverVolumeUI(pointer: Phaser.Input.Pointer) {
@@ -1261,16 +1444,42 @@ export class Game extends Scene {
       });
     }
 
+    // Hydrate GM placed obstacles (if any)
+    const placed = (this.room.state as any).placedObstacles as any;
+    if (placed && typeof placed.forEach === "function") {
+      placed.forEach((obs: PlacedObstacleState) => this.addPlacedObstacle(obs));
+    }
+
     // Subscribe for additions of pipes
     $(this.room.state.pipes).onAdd((pipe: PipeState) => {
-      console.log("Pipe added to room state:", pipe);
+      //console.log("Pipe added to room state:", pipe);
+      if (!pipe) return;
       this.addPipe(pipe);
     });
 
     $(this.room.state.pipes).onRemove((pipe: PipeState) => {
-      console.log("Pipe removed from room state:", pipe);
+      //console.log("Pipe removed from room state:", pipe);
+      if (!pipe) return;
       this.removePipe(pipe.id);
     });
+
+    // Subscribe for GM placed obstacles
+    const po = (this.room.state as any).placedObstacles;
+    if (po) {
+      const po$ = $(po);
+      po$.onAdd((obs: PlacedObstacleState) => {
+        if (!obs) return;
+        this.addPlacedObstacle(obs);
+      });
+      po$.onRemove((obs: PlacedObstacleState | undefined) => {
+        if (!obs || typeof (obs as any).id !== "number") return;
+        this.removePlacedObstacle((obs as any).id);
+      });
+      po$.onChange((obs: PlacedObstacleState | undefined, index?: number) => {
+        if (!obs) return;
+        this.updatePlacedObstacle(obs);
+      });
+    }
 
     $(this.room.state).onChange((changes: any[]) => {
       console.log("Room state changed:", changes);
@@ -1319,6 +1528,7 @@ export class Game extends Scene {
       this.localPlayerReady = player.ready;
       this.localPlayerIsGM = isGM;
       console.log("Set local player ready state to:", player.ready, "isGM:", isGM);
+      this.updateGmUiVisibility();
     }
 
     if (!isGM) {
@@ -1667,6 +1877,29 @@ export class Game extends Scene {
       }
     });
     return count;
+  }
+
+  private addPlacedObstacle(obs: PlacedObstacleState) {
+    const key = obs.kind === "top" ? "pipe" : "pipe-red";
+    const img = this.add.image(obs.x, obs.y, key);
+    img.setOrigin(0.5, 0);
+    img.setFlipY(obs.kind === "top");
+    img.setDepth(4);
+    this.placedObstacleSprites.set(obs.id, { img, targetX: obs.x, targetY: obs.y });
+  }
+
+  private updatePlacedObstacle(obs: PlacedObstacleState | undefined) {
+    if (!obs) return;
+    const entry = this.placedObstacleSprites.get(obs.id);
+    if (!entry) return;
+    entry.targetX = obs.x;
+    entry.targetY = obs.y;
+  }
+
+  private removePlacedObstacle(id: number) {
+    const entry = this.placedObstacleSprites.get(id);
+    if (entry) entry.img.destroy();
+    this.placedObstacleSprites.delete(id);
   }
 
   private getReadyCount() {

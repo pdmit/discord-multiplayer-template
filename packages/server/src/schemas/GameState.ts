@@ -44,12 +44,31 @@ export class PipeState extends Schema {
   Ybottom = 0;
 }
 
+export class PlacedObstacleState extends Schema {
+  @type("number")
+  id = 0;
+
+  @type("number")
+  x = 0;
+
+  @type("number")
+  y = 0; // top Y of the sprite
+
+  // e.g. "top" | "bottom"
+  @type("string")
+  kind = "top";
+}
+
 export class GameState extends Schema {
   @type({ map: PlayerState })
   players = new MapSchema<PlayerState>();
 
   @type([PipeState])
   pipes = new ArraySchema<PipeState>();
+
+  // GM-placed obstacles (move with the world, collide with birds)
+  @type([PlacedObstacleState])
+  placedObstacles = new ArraySchema<PlacedObstacleState>();
 
   @type(["string"])
   skinOptions = new ArraySchema<string>();

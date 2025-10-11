@@ -1,5 +1,5 @@
 import { Client, Room } from "colyseus";
-import { GameState, PlayerState, PipeState } from "../schemas/GameState";
+import { GameState, PlayerState, PipeState, PlacedObstacleState } from "../schemas/GameState";
 import logger from "../logger";
 
 export class GameRoom extends Room<GameState> {
@@ -17,7 +17,9 @@ export class GameRoom extends Room<GameState> {
   private readonly pipeHeight = 315;
   private pipeWidth = 52;
   private nextPipeId = 1;
+  private nextPlacedObstacleId = 10001;
   private elapsedSincePipe = 0;
+  private obstacleDebugAccumulator = 0; // seconds
   private skins: Array<PlayerState["skin"]> = ["yellow", "blue", "red", "green", "purple", "orange"];
   private worldWidth = 1280;
   private worldHeight = 720;
@@ -81,6 +83,13 @@ export class GameRoom extends Room<GameState> {
     this.setState(new GameState());
     this.populateSkinOptions();
     this.setSimulationInterval((deltaTime) => this.update(deltaTime / 1000));
+    logger.info("GameRoom created: state initialized", {
+      running: this.state.running,
+      stage: this.state.stage,
+      players: this.state.players.size,
+      pipes: this.state.pipes.length,
+      placedObstacles: this.state.placedObstacles.length,
+    });
 
     this.onMessage("flap", (client) => {
       const player = this.state.players.get(client.sessionId);
@@ -195,6 +204,49 @@ export class GameRoom extends Room<GameState> {
     player.ready = false;
 
     this.state.players.set(client.sessionId, player);
+    this.onMessage("gmPlaceObstacle", (client, message: { kind?: string; x?: number; y?: number }) => {
+      logger.debug("gmPlaceObstacle received", { client: client.sessionId, message });
+      const player = this.state.players.get(client.sessionId) as any;
+      if (!player || player.role !== "gm") {
+        logger.warn(`gmPlaceObstacle rejected - not GM: ${client.sessionId}`);
+        return;
+      }
+
+      if (!this.state.running) {
+        logger.warn(`gmPlaceObstacle rejected - game not running`);
+        return;
+      }
+
+      const kind = (message?.kind ?? "").toString();
+      if (kind !== "top" && kind !== "bottom") {
+        logger.warn(`gmPlaceObstacle rejected - invalid kind: ${kind}`);
+        return;
+      }
+
+      const x = Number(message?.x);
+      const y = Number(message?.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        logger.warn(`gmPlaceObstacle rejected - invalid coords: x=${message?.x}, y=${message?.y}`);
+        return;
+      }
+
+      // Clamp to world bounds within reasonable limits
+      const minX = -200;
+      const maxX = this.worldWidth + 400;
+      const minY = 0;
+      const maxY = this.worldHeight - this.floorHeight - this.pipeHeight; // keep inside sky/floor
+      const clampedX = Math.max(minX, Math.min(maxX, x));
+      const clampedY = Math.max(minY, Math.min(maxY, y));
+
+      const obs = new PlacedObstacleState();
+      obs.id = this.nextPlacedObstacleId++;
+      obs.x = clampedX;
+      obs.y = clampedY;
+      obs.kind = kind;
+      this.state.placedObstacles.push(obs);
+      logger.info(`GM placed obstacle: id=${obs.id}, kind=${kind}, x=${obs.x}, y=${obs.y}`);
+      logger.debug("placedObstacles length after add", { count: this.state.placedObstacles.length });
+    });
   }
 
   onLeave(client: Client): void {
@@ -262,7 +314,17 @@ export class GameRoom extends Room<GameState> {
   private clearLevel() {
     this.elapsedSincePipe = 0;
     this.nextPipeId = 1;
-    this.state.pipes.splice(0, this.state.pipes.length);
+    const pipesBefore = this.state.pipes.length;
+    const placedBefore = this.state.placedObstacles ? this.state.placedObstacles.length : 0;
+    // Remove pipes individually to ensure onRemove events fire consistently
+    while (this.state.pipes.length > 0) {
+      this.state.pipes.shift();
+    }
+    // Remove placed obstacles individually to ensure onRemove events fire
+    while (this.state.placedObstacles && this.state.placedObstacles.length > 0) {
+      this.state.placedObstacles.shift();
+    }
+    logger.info("clearLevel completed", { pipesBefore, placedBefore, pipesAfter: this.state.pipes.length, placedAfter: this.state.placedObstacles.length });
   }
 
   private setAllPlayersReady(value: boolean) {
@@ -297,7 +359,10 @@ export class GameRoom extends Room<GameState> {
   }
 
   private startRound() {
-    logger.info(`Starting round with ${this.state.players.size} players`);
+    logger.info(`Starting round with ${this.state.players.size} players`, {
+      placedBeforeStart: this.state.placedObstacles.length,
+      pipesBeforeStart: this.state.pipes.length,
+    });
     this.state.running = true;
     this.state.winnerId = "";
     this.clearLevel();
@@ -323,7 +388,11 @@ export class GameRoom extends Room<GameState> {
     for (let i = 0; i < 3; i += 1) {
       this.spawnPipePair(this.worldWidth + 200 + i * initialSpacing);
     }
-    logger.info("Round started successfully");
+    logger.info("Round started successfully", {
+      pipesAfterInit: this.state.pipes.length,
+      placedAfterClear: this.state.placedObstacles.length,
+      speed: this.pipeSpeed,
+    });
   }
 
   private spawnPipePair(startX?: number) {
@@ -394,6 +463,15 @@ export class GameRoom extends Room<GameState> {
       logger.info(`Pipe removed (pre-move): id=${removed?.id}, ref=${this.refIdOf(removed)}`);
     }
 
+    // Remove placed obstacles that left the screen (unordered removals supported)
+    for (let i = this.state.placedObstacles.length - 1; i >= 0; i -= 1) {
+      const obs = this.state.placedObstacles[i];
+      if (obs.x < -this.pipeWidth) {
+        const removed = this.state.placedObstacles.splice(i, 1)[0];
+        logger.info(`Placed obstacle removed (pre-move): id=${removed?.id}`);
+      }
+    }
+
     for (const [, player] of this.state.players) {
       if ((player as any).role === "gm") {
         continue; // spectators not updated
@@ -440,6 +518,25 @@ export class GameRoom extends Room<GameState> {
           player.score += 1;
         }
       }
+
+      // Collide against GM-placed obstacles (simple AABB)
+      for (const obs of this.state.placedObstacles) {
+        const obsLeft = obs.x - this.pipeWidth / 2;
+        const obsRight = obs.x + this.pipeWidth / 2;
+        const obsTop = obs.y;
+        const obsBottom = obs.y + this.pipeHeight;
+
+        const birdLeft = this.birdX - this.birdHalfWidth;
+        const birdRight = this.birdX + this.birdHalfWidth;
+        const birdTop = player.y - this.birdHalfHeight;
+        const birdBottom = player.y + this.birdHalfHeight;
+
+        if (birdRight > obsLeft && birdLeft < obsRight && birdBottom > obsTop && birdTop < obsBottom) {
+          logger.warn(`Player hit placed obstacle id=${obs.id} kind=${obs.kind} at x=${obs.x}, y=${obs.y}`);
+          player.alive = false;
+          break;
+        }
+      }
     }
 
     for (const pipe of this.state.pipes) {
@@ -447,6 +544,23 @@ export class GameRoom extends Room<GameState> {
       // if (pipe.id == 1) {
       //   console.log(pipe.x);
       // }
+    }
+
+    for (const obs of this.state.placedObstacles) {
+      obs.x -= this.pipeSpeed * delta;
+    }
+
+    // Periodic debug summary for placed obstacles movement
+    this.obstacleDebugAccumulator += delta;
+    if (this.obstacleDebugAccumulator >= 0.5) {
+      this.obstacleDebugAccumulator = 0;
+      const snapshot = this.state.placedObstacles.slice(0, 3).map((o) => ({ id: o.id, x: Number(o.x.toFixed?.(1) ?? o.x), y: o.y, kind: o.kind }));
+      logger.debug("Obstacles tick", {
+        running: this.state.running,
+        speed: this.pipeSpeed,
+        count: this.state.placedObstacles.length,
+        sample: snapshot,
+      });
     }
 
     const alivePlayers = Array.from(this.state.players.values()).filter((player: any) => player.alive && player.role !== "gm");
