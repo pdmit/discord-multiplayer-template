@@ -1,6 +1,26 @@
 import { Client, Room } from "colyseus";
-import { GameState, PlayerState, PipeState, PlacedObstacleState } from "../schemas/GameState";
+import { GameState, PlayerState, PipeState, PlacedObstacleState, PowerUpState } from "../schemas/GameState";
 import logger from "../logger";
+
+class PowerUpDef {
+  constructor(
+    public type: string,
+    public name: string,
+    public sprite: string,
+    public intervalSec: number = 15,
+  ) {}
+
+  spawn(id: number, x: number, y: number): PowerUpState {
+    const pu = new PowerUpState();
+    pu.id = id;
+    pu.type = this.type;
+    pu.name = this.name;
+    pu.sprite = this.sprite;
+    pu.x = x;
+    pu.y = y;
+    return pu;
+  }
+}
 
 export class GameRoom extends Room<GameState> {
   maxClients = 25; // Current Discord limit is 25
@@ -18,8 +38,11 @@ export class GameRoom extends Room<GameState> {
   private pipeWidth = 52;
   private nextPipeId = 1;
   private nextPlacedObstacleId = 10001;
+  private nextPowerUpId = 50001;
   private elapsedSincePipe = 0;
+  private powerUpElapsed = 0; // seconds
   private obstacleDebugAccumulator = 0; // seconds
+  private readonly powerUpPickupRadius = 28; // px
   private skins: Array<PlayerState["skin"]> = ["yellow", "blue", "red", "green", "purple", "orange"];
   private worldWidth = 1280;
   private worldHeight = 720;
@@ -27,6 +50,12 @@ export class GameRoom extends Room<GameState> {
   private readonly stageCount = 5;
   private readonly stageDurationSeconds = 20; // seconds per stage escalation
   private readonly stageSpeedIncrement = 0.2; // +20% pipe speed per stage
+  private readonly powerUpIntervalSec = 15; // fallback interval if def not sampled
+  private powerUpDefs: PowerUpDef[] = [
+    new PowerUpDef("star", "Star", "score-5", 15),
+    new PowerUpDef("bomb", "Bomb", "bomb", 15),
+  ];
+  private currentPowerUpIntervalSec = this.powerUpIntervalSec;
 
   // Debug: expose internal schema refId when logging
   private refIdOf(obj: any) {
@@ -81,6 +110,8 @@ export class GameRoom extends Room<GameState> {
   onCreate(): void {
     // Properly register the state with Colyseus (ensures correct change-tree + ref ordering)
     this.setState(new GameState());
+    // Initialize Pig King defaults on room creation (will also be reset each round)
+    this.resetPigKingHealth(5);
     this.populateSkinOptions();
     this.setSimulationInterval((deltaTime) => this.update(deltaTime / 1000));
     logger.info("GameRoom created: state initialized", {
@@ -175,6 +206,9 @@ export class GameRoom extends Room<GameState> {
       player.skin = skin;
       player.ready = false;
     });
+
+    // Note: No client message is exposed to damage Pig King.
+    // Damage must be triggered by server-side game logic only.
   }
 
   onJoin(client: Client, options?: any): void {
@@ -333,9 +367,11 @@ export class GameRoom extends Room<GameState> {
 
   private clearLevel() {
     this.elapsedSincePipe = 0;
+    this.powerUpElapsed = 0;
     this.nextPipeId = 1;
     const pipesBefore = this.state.pipes.length;
     const placedBefore = this.state.placedObstacles ? this.state.placedObstacles.length : 0;
+    const powerUpsBefore = this.state.powerUps ? this.state.powerUps.length : 0;
     // Remove pipes individually to ensure onRemove events fire consistently
     while (this.state.pipes.length > 0) {
       this.state.pipes.shift();
@@ -344,7 +380,10 @@ export class GameRoom extends Room<GameState> {
     while (this.state.placedObstacles && this.state.placedObstacles.length > 0) {
       this.state.placedObstacles.shift();
     }
-    logger.info("clearLevel completed", { pipesBefore, placedBefore, pipesAfter: this.state.pipes.length, placedAfter: this.state.placedObstacles.length });
+    while ((this.state as any).powerUps && this.state.powerUps.length > 0) {
+      this.state.powerUps.shift();
+    }
+    logger.info("clearLevel completed", { pipesBefore, placedBefore, powerUpsBefore, pipesAfter: this.state.pipes.length, placedAfter: this.state.placedObstacles.length, powerUpsAfter: this.state.powerUps.length });
   }
 
   private setAllPlayersReady(value: boolean) {
@@ -389,6 +428,9 @@ export class GameRoom extends Room<GameState> {
     this.state.difficulty = 0;
     this.applyStage(1);
 
+    // Reset Pig King at the start of each round
+    this.resetPigKingHealth(5);
+
     for (const [, player] of this.state.players) {
       if ((player as any).role === "gm") {
         // Spectators don't participate in physics
@@ -408,9 +450,12 @@ export class GameRoom extends Room<GameState> {
     for (let i = 0; i < 3; i += 1) {
       this.spawnPipePair(this.worldWidth + 200 + i * initialSpacing);
     }
+    // Reset power-up spawn timer
+    this.powerUpElapsed = 0;
     logger.info("Round started successfully", {
       pipesAfterInit: this.state.pipes.length,
       placedAfterClear: this.state.placedObstacles.length,
+      powerUpsAfterClear: this.state.powerUps.length,
       speed: this.pipeSpeed,
     });
   }
@@ -472,6 +517,13 @@ export class GameRoom extends Room<GameState> {
     if (this.elapsedSincePipe >= this.pipeInterval) {
       this.elapsedSincePipe = 0;
       this.spawnPipePair();
+    }
+
+    // Spawn power-ups at fixed interval (in seconds) while running
+    this.powerUpElapsed += delta;
+    if (this.powerUpElapsed >= this.currentPowerUpIntervalSec) {
+      this.powerUpElapsed = 0;
+      this.spawnPowerUp();
     }
 
     const floorY = this.worldHeight - this.floorHeight;
@@ -557,6 +609,25 @@ export class GameRoom extends Room<GameState> {
           break;
         }
       }
+
+      // Power-up pickup (circle collision around power-up center)
+      for (let i = this.state.powerUps.length - 1; i >= 0; i -= 1) {
+        const pu = this.state.powerUps[i];
+        const dx = this.birdX - pu.x;
+        const dy = player.y - pu.y;
+        if (dx * dx + dy * dy <= this.powerUpPickupRadius * this.powerUpPickupRadius) {
+          // Apply effect and remove
+          this.applyPowerUpEffect(player, pu);
+          const removed = this.state.powerUps.splice(i, 1)[0];
+          const pid = this.findPlayerId(player);
+          logger.info(`PowerUp picked: player=${pid}, id=${removed?.id}, type=${removed?.type}`);
+          // Notify clients for FX/UI
+          if (pid) {
+            this.broadcast("powerUpPicked", { playerId: pid, type: pu.type, name: pu.name, x: pu.x, y: pu.y });
+          }
+          break; // one power-up per player per tick
+        }
+      }
     }
 
     for (const pipe of this.state.pipes) {
@@ -568,6 +639,16 @@ export class GameRoom extends Room<GameState> {
 
     for (const obs of this.state.placedObstacles) {
       obs.x -= this.pipeSpeed * delta;
+    }
+
+    // Move power-ups with the world and remove off-screen
+    for (let i = this.state.powerUps.length - 1; i >= 0; i -= 1) {
+      const pu = this.state.powerUps[i];
+      pu.x -= this.pipeSpeed * delta;
+      if (pu.x < -this.pipeWidth) {
+        const removed = this.state.powerUps.splice(i, 1)[0];
+        logger.info(`PowerUp removed (off-screen): id=${removed?.id}, type=${(removed as any)?.type}`);
+      }
     }
 
     // Periodic debug summary for placed obstacles movement
@@ -588,22 +669,11 @@ export class GameRoom extends Room<GameState> {
     //logger.debug(`Update: ${alivePlayers.length} alive players out of ${this.state.players.size} total`);
 
     if (alivePlayers.length === 0) {
-      // All players died - game over
-      logger.info("Game over - all players died");
+      // Pig King wins if all birds die
+      logger.info("Round over - Pig King wins (all birds died)");
       this.state.running = false;
-      this.state.winnerId = "";
-      this.applyStage(0);
-      // Defer clearing to next tick to avoid delete+patch ordering issues
-      this.deferClearLevel();
-      this.setAllPlayersReady(false);
-      for (const [, player] of this.state.players) {
-        player.velocity = 0;
-      }
-    } else if (alivePlayers.length === 1 && activeParticipants > 1) {
-      // Multiplayer mode - one player wins
-      logger.info("Multiplayer game over - winner:", this.findPlayerId(alivePlayers[0]));
-      this.state.running = false;
-      this.state.winnerId = this.findPlayerId(alivePlayers[0]);
+      // Prefer GM sessionId; fallback to special token
+      this.state.winnerId = this.state.gameMasterId || "__PIG__";
       this.applyStage(0);
       // Defer clearing to next tick to avoid delete+patch ordering issues
       this.deferClearLevel();
@@ -612,7 +682,7 @@ export class GameRoom extends Room<GameState> {
         player.velocity = 0;
       }
     }
-    // Single player mode - let them play until they die (no auto-win)
+    // Otherwise, keep playing until birds or pig king win
   }
 
   private findPlayerId(target: PlayerState | null): string {
@@ -633,5 +703,69 @@ export class GameRoom extends Room<GameState> {
     this.clock.setTimeout(() => {
       this.clearLevel();
     }, 0);
+  }
+
+  // -- Pig King (GM) Health Management -------------------------------------
+  private resetPigKingHealth(max: number) {
+    const m = Math.max(0, Math.floor(max));
+    this.state.pigKing.maxHealth = m;
+    this.state.pigKing.health = m;
+  }
+
+  private damagePigKing(amount: number = 1) {
+    const a = Math.max(0, Math.floor(amount));
+    if (a <= 0) return;
+    const prev = this.state.pigKing.health;
+    const next = Math.max(0, prev - a);
+    if (next === prev) return;
+    this.state.pigKing.health = next;
+    logger.info(`Pig King took ${a} damage (${prev} -> ${next})`);
+    if (this.state.pigKing.health <= 0 && this.state.running) {
+      // Birds win when Pig King health reaches 0
+      logger.info("Round over - Birds defeated Pig King");
+      this.state.running = false;
+      this.state.winnerId = "__BIRDS__";
+      this.applyStage(0);
+      this.deferClearLevel();
+      this.setAllPlayersReady(false);
+      for (const [, player] of this.state.players) {
+        player.velocity = 0;
+      }
+    }
+  }
+
+  // -- Power-Ups ------------------------------------------------------------
+  private spawnPowerUp() {
+    const def = this.powerUpDefs[Math.floor(Math.random() * this.powerUpDefs.length)] || this.powerUpDefs[0];
+    const id = this.nextPowerUpId++;
+    const x = this.worldWidth + 200; // spawn to the right of the screen
+
+    // Y anywhere visible between sky and just above the floor
+    const topMargin = 40;
+    const floorY = this.worldHeight - this.floorHeight;
+    const bottomMargin = 80;
+    const minY = topMargin;
+    const maxY = Math.max(minY, floorY - bottomMargin);
+    const y = minY + Math.random() * (maxY - minY);
+    const pu = def.spawn(id, x, y);
+    this.state.powerUps.push(pu);
+    this.currentPowerUpIntervalSec = def.intervalSec || this.powerUpIntervalSec;
+    logger.info(`PowerUp spawned: id=${pu.id}, type=${pu.type}, x=${x.toFixed(1)}, y=${y.toFixed(1)}`);
+  }
+
+  private applyPowerUpEffect(player: PlayerState, pu: PowerUpState) {
+    switch (pu.type) {
+      case "star":
+        // Award points; treat as passing two pipes
+        player.score += 2;
+        break;
+      case "bomb":
+        // Deal damage to Pig King
+        this.damagePigKing(1);
+        break;
+      default:
+        // No-op placeholder
+        break;
+    }
   }
 }

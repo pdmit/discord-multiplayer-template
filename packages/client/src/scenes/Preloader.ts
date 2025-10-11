@@ -82,6 +82,11 @@ export class Preloader extends Scene {
     this.load.image("orangebird-midflap", "orangebird-midflap.png");
     this.load.image("orangebird-upflap", "orangebird-upflap.png");
 
+    // Power-ups
+    this.load.image("bomb", "bomb.png");
+    // Pig King avatar
+    this.load.image("pig-king-cropped", "pig-king-cropped.png");
+
     this.load.setPath("/.proxy/assets/flappy-bird-assets/audio");
     this.load.audio("wing", ["wing.ogg", "wing.wav"]);
     this.load.audio("point", ["point.ogg", "point.wav"]);

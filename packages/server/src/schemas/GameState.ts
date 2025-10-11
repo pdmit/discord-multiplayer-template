@@ -59,6 +59,37 @@ export class PlacedObstacleState extends Schema {
   kind = "top";
 }
 
+export class PigKingState extends Schema {
+  @type("number")
+  health = 0;
+
+  @type("number")
+  maxHealth = 0;
+}
+
+export class PowerUpState extends Schema {
+  @type("number")
+  id = 0;
+
+  @type("number")
+  x = 0;
+
+  @type("number")
+  y = 0;
+
+  // e.g. internal type id: "star", "shield", etc.
+  @type("string")
+  type = "";
+
+  // Display name shown in UI/logs
+  @type("string")
+  name = "";
+
+  // Phaser texture key for client sprite
+  @type("string")
+  sprite = "";
+}
+
 export class GameState extends Schema {
   @type({ map: PlayerState })
   players = new MapSchema<PlayerState>();
@@ -69,6 +100,10 @@ export class GameState extends Schema {
   // GM-placed obstacles (move with the world, collide with birds)
   @type([PlacedObstacleState])
   placedObstacles = new ArraySchema<PlacedObstacleState>();
+
+  // Power-ups moving with the world
+  @type([PowerUpState])
+  powerUps = new ArraySchema<PowerUpState>();
 
   @type(["string"])
   skinOptions = new ArraySchema<string>();
@@ -88,4 +123,8 @@ export class GameState extends Schema {
   // Optional convenience field to track who is GM (empty if none)
   @type("string")
   gameMasterId: string = "";
+
+  // Global Game Master (Pig King) health shared with all clients
+  @type(PigKingState)
+  pigKing: PigKingState = new PigKingState();
 }

@@ -28,6 +28,20 @@ type PlacedObstacleState = {
   kind: "top" | "bottom";
 };
 
+type PigKingState = {
+  health: number;
+  maxHealth: number;
+};
+
+type PowerUpState = {
+  id: number;
+  x: number;
+  y: number;
+  type: string;
+  name: string;
+  sprite: string;
+};
+
 type SkinSlotElements = {
   container: Phaser.GameObjects.Container;
   background: Phaser.GameObjects.Rectangle;
@@ -112,6 +126,26 @@ export class Game extends Scene {
   private gmGapGfxBottom?: Phaser.GameObjects.Graphics;
   private gmXClampTint?: Phaser.GameObjects.Rectangle;
 
+  // Pig King health UI
+  private pigBarContainer?: Phaser.GameObjects.Container;
+  private pigBarBg?: Phaser.GameObjects.Rectangle;
+  private pigBarFill?: Phaser.GameObjects.Rectangle;
+  private pigBarText?: Phaser.GameObjects.Text;
+  private pigAvatar?: Phaser.GameObjects.Image;
+  private pigFlashTween?: Phaser.Tweens.Tween;
+  private lastPigHealth: number = -1;
+  private readonly pigBarWidth: number = 200;
+  private readonly pigBarHeight: number = 18;
+  private readonly pigAvatarSize: number = 40;
+
+  // Win banner
+  private winBanner?: Phaser.GameObjects.Container;
+  private winBannerTimeout?: Phaser.Time.TimerEvent;
+  private lastWinBannerKind?: "birds" | "pig";
+
+  // Power-ups
+  private powerUpSprites = new Map<number, { img: Phaser.GameObjects.Image; targetX: number; targetY: number }>();
+
   constructor() {
     super("Game");
 
@@ -187,6 +221,11 @@ export class Game extends Scene {
 
     // Smoothly interpolate placed obstacles towards server targets
     this.placedObstacleSprites.forEach((entry) => {
+      entry.img.x = Phaser.Math.Linear(entry.img.x, entry.targetX, interpolationAlpha);
+      entry.img.y = Phaser.Math.Linear(entry.img.y, entry.targetY, interpolationAlpha);
+    });
+    // Smoothly interpolate power-ups towards server targets
+    this.powerUpSprites.forEach((entry) => {
       entry.img.x = Phaser.Math.Linear(entry.img.x, entry.targetX, interpolationAlpha);
       entry.img.y = Phaser.Math.Linear(entry.img.y, entry.targetY, interpolationAlpha);
     });
@@ -582,6 +621,9 @@ export class Game extends Scene {
     this.updateGmGapGuides();
     this.ensureGmXClampTint();
     this.updateGmXClampTint();
+
+    // Create Pig King health bar (top-right)
+    this.createPigHealthUI();
   }
 
   private updateSkinOptionsFromState() {
@@ -1604,6 +1646,11 @@ export class Game extends Scene {
     if (placed && typeof placed.forEach === "function") {
       placed.forEach((obs: PlacedObstacleState) => this.addPlacedObstacle(obs));
     }
+    // Hydrate power-ups (if any)
+    const powerUpsState = (this.room.state as any).powerUps as any;
+    if (powerUpsState && typeof powerUpsState.forEach === "function") {
+      powerUpsState.forEach((pu: PowerUpState) => this.addPowerUp(pu));
+    }
 
     // Subscribe for additions of pipes
     $(this.room.state.pipes).onAdd((pipe: PipeState) => {
@@ -1635,6 +1682,32 @@ export class Game extends Scene {
         this.updatePlacedObstacle(obs);
       });
     }
+    // Subscribe for power-ups
+    const pu = (this.room.state as any).powerUps;
+    if (pu) {
+      const pu$ = $(pu);
+      pu$.onAdd((p: PowerUpState) => {
+        if (!p) return;
+        this.addPowerUp(p);
+      });
+      pu$.onRemove((p: PowerUpState | undefined) => {
+        if (!p || typeof (p as any).id !== "number") return;
+        this.removePowerUp((p as any).id);
+      });
+      pu$.onChange((p: PowerUpState | undefined) => {
+        if (!p) return;
+        this.updatePowerUp(p);
+      });
+    }
+
+    // Power-up pickup FX (broadcast from server)
+    this.room.onMessage("powerUpPicked", (payload: { playerId: string; type: string; name: string; x: number; y: number }) => {
+      const isLocal = payload?.playerId === this.localPlayerId;
+      this.showPowerUpPickup(payload?.x ?? 0, payload?.y ?? 0, payload?.name ?? "", isLocal);
+      try {
+        this.sound.play(isLocal ? "point" : "swoosh", { volume: isLocal ? 0.5 : 0.35 });
+      } catch {}
+    });
 
     $(this.room.state).onChange((changes: any[]) => {
       console.log("Room state changed:", changes);
@@ -1652,13 +1725,144 @@ export class Game extends Scene {
           if (change.field === "skinOptions") {
             this.updateSkinOptionsFromState();
           }
+          if (change.field === "pigKing") {
+            const pk = (this.room!.state as any).pigKing as PigKingState | undefined;
+            if (pk) this.updatePigHealthUI(pk.health, pk.maxHealth);
+          }
         });
       } else {
         console.log("State change callback received non-array data:", changes);
       }
     });
 
+    // Pig King health updates
+    const pig = (this.room.state as any).pigKing as PigKingState | undefined;
+    if (pig) {
+      // Initial render
+      this.updatePigHealthUI(pig.health, pig.maxHealth);
+      const pig$ = $((this.room.state as any).pigKing);
+      pig$.onChange((_changes: any[]) => {
+        const latest = (this.room!.state as any).pigKing as PigKingState | undefined;
+        if (!latest) return;
+        this.updatePigHealthUI(latest.health, latest.maxHealth);
+      });
+    }
+
     this.updateStatusMessage();
+  }
+
+  private createPigHealthUI() {
+    const width = Number(this.game.config.width);
+    const margin = 18;
+    const container = this.add.container(width - margin, margin).setDepth(120).setScrollFactor(0);
+
+    const bgWidth = this.pigBarWidth + 110 + this.pigAvatarSize;
+    const bg = this.add.rectangle(0, 0, bgWidth, 48, 0x000000, 0.45).setOrigin(1, 0).setStrokeStyle(2, 0xffffff, 0.35);
+
+    // Avatar at left side
+    const avatarX = -bgWidth + this.pigAvatarSize / 2 + 8;
+    const avatarY = 4;
+    const avatar = this.add.image(avatarX, avatarY, "pig-king-cropped").setOrigin(0.5, 0).setDisplaySize(this.pigAvatarSize, this.pigAvatarSize);
+
+    // Label above bar, aligned with bar left
+    const label = this.add.text(-10 - this.pigBarWidth, 6, "Pig King", {
+      fontFamily: "Arial Black",
+      fontSize: 16,
+      color: "#ffd369",
+      stroke: "#000000",
+      strokeThickness: 4,
+    }).setOrigin(0, 0);
+
+    const barBg = this.add.rectangle(-10, 28, this.pigBarWidth, this.pigBarHeight, 0x3a3a3a, 0.9).setOrigin(1, 0.5);
+    const barFill = this.add.rectangle(-10 - this.pigBarWidth, 28, this.pigBarWidth, this.pigBarHeight, 0xe74c3c, 0.95).setOrigin(0, 0.5);
+    const text = this.add.text(-10 - this.pigBarWidth / 2, 28, "--/--", {
+      fontFamily: "Arial Black",
+      fontSize: 14,
+      color: "#ffffff",
+      stroke: "#000000",
+      strokeThickness: 4,
+      align: "center",
+    }).setOrigin(0.5);
+
+    container.add([bg, avatar, label, barBg, barFill, text]);
+
+    this.pigBarContainer = container;
+    this.pigBarBg = barBg;
+    this.pigBarFill = barFill;
+    this.pigBarText = text;
+    this.pigAvatar = avatar;
+  }
+
+  private updatePigHealthUI(health: number, max: number) {
+    if (!this.pigBarContainer || !this.pigBarFill || !this.pigBarText) return;
+    const h = Math.max(0, Math.floor(health ?? 0));
+    const m = Math.max(0, Math.floor(max ?? 0));
+    const pct = m > 0 ? Phaser.Math.Clamp(h / m, 0, 1) : 0;
+    const fillW = this.pigBarWidth * pct;
+
+    // Move/resize the fill rect by changing its x and width
+    this.pigBarFill.x = -10 - this.pigBarWidth;
+    this.pigBarFill.width = fillW;
+    // Gradient color: 0 -> red, 0.5 -> yellow, 1 -> green
+    const color = this.getHealthBarColor(pct);
+    this.pigBarFill.setFillStyle(color, this.pigFlashTween ? this.pigBarFill.alpha : 0.95);
+    this.pigBarText.setText(`${h}/${m}`);
+    this.pigBarContainer.setVisible(m > 0);
+
+    // Flash the bar briefly if damage occurred
+    if (this.lastPigHealth >= 0 && h < this.lastPigHealth) {
+      this.flashPigHealthBar();
+    }
+    this.lastPigHealth = h;
+  }
+
+  private flashPigHealthBar() {
+    if (!this.pigBarFill || !this.pigBarBg) return;
+    if (this.pigFlashTween) {
+      try { this.pigFlashTween.stop(); } catch {}
+      this.pigBarFill.setAlpha(1);
+      this.pigBarBg.setAlpha(0.9);
+    }
+    const targets: any[] = [];
+    if (this.pigBarFill) targets.push(this.pigBarFill);
+    if (this.pigBarBg) targets.push(this.pigBarBg);
+    this.pigFlashTween = this.tweens.add({
+      targets,
+      alpha: { from: 1, to: 0.3 },
+      duration: 90,
+      yoyo: true,
+      repeat: 2,
+      onComplete: () => {
+        this.pigBarFill?.setAlpha(1);
+        this.pigBarBg?.setAlpha(0.9);
+        this.pigFlashTween = undefined;
+      },
+    });
+  }
+
+  // Map health percent to a smooth color between red -> yellow -> green
+  private getHealthBarColor(pct: number): number {
+    const clamp = Phaser.Math.Clamp(pct, 0, 1);
+    const RED = 0xe74c3c;    // low
+    const YELLOW = 0xf1c40f; // mid
+    const GREEN = 0x2ecc71;  // high
+    if (clamp <= 0.5) {
+      const t = clamp / 0.5; // 0..1 from red to yellow
+      return this.lerpColor(RED, YELLOW, t);
+    } else {
+      const t = (clamp - 0.5) / 0.5; // 0..1 from yellow to green
+      return this.lerpColor(YELLOW, GREEN, t);
+    }
+  }
+
+  private lerpColor(c1: number, c2: number, t: number): number {
+    const tt = Phaser.Math.Clamp(t, 0, 1);
+    const r1 = (c1 >> 16) & 0xff; const g1 = (c1 >> 8) & 0xff; const b1 = c1 & 0xff;
+    const r2 = (c2 >> 16) & 0xff; const g2 = (c2 >> 8) & 0xff; const b2 = c2 & 0xff;
+    const r = Math.round(r1 + (r2 - r1) * tt);
+    const g = Math.round(g1 + (g2 - g1) * tt);
+    const b = Math.round(b1 + (b2 - b1) * tt);
+    return (r << 16) | (g << 8) | b;
   }
 
   private addPlayer(sessionId: string, player: PlayerState) {
@@ -1727,6 +1931,7 @@ export class Game extends Scene {
     const cached = this.playerCache.get(sessionId);
     const readyChanged = !cached || cached.ready !== player.ready;
     const skinChanged = !cached || cached.skin !== player.skin;
+    const scoreChanged = !cached || cached.score !== player.score;
     if (cached) {
       if (cached.alive && !player.alive && sessionId === this.localPlayerId) {
         this.sound.play("hit", { volume: 0.4 });
@@ -1762,7 +1967,7 @@ export class Game extends Scene {
     const shouldRefresh = changeList.some(
       (change: any) => change.field === "score" || change.field === "alive" || change.field === "ready",
     );
-    if (shouldRefresh) {
+    if (shouldRefresh || scoreChanged) {
       this.refreshScoreboard();
       this.updateStatusMessage();
     }
@@ -1978,27 +2183,40 @@ export class Game extends Scene {
     if (!running) {
       const readyCount = this.getReadyCount();
 
-      // Check if it's a single player game over (no winner, but game ended)
-      if (!winnerId && playerCount === 1) {
-        const localPlayer = this.room.state.players.get(this.localPlayerId);
-        if (localPlayer && !localPlayer.alive) {
-          // Single player died - show game over screen
-          this.showGameOverScreen(false, localPlayer.score);
-          return;
+      // Team win handling
+      if (winnerId === "__BIRDS__") {
+        this.showWinBanner("birds");
+        this.statusText.setText("Birds win!\nPress Ready to play again.");
+        // Show win screen for birds (non-GM), loss for GM
+        const isLocalBird = !this.localPlayerIsGM;
+        const localPlayer = this.room.state.players.get(this.localPlayerId) as PlayerState | undefined;
+        if (isLocalBird) {
+          this.showGameOverScreen(true, localPlayer?.score || 0);
+        } else {
+          this.showGameOverScreen(false, 0);
         }
+        return;
       }
 
-      if (winnerId) {
-        const winner = this.room.state.players.get(winnerId) as PlayerState | undefined;
-        const winnerName = winner ? winner.name : "Nobody";
-        const isLocalWinner = winnerId === this.localPlayerId;
-        this.statusText.setText(`${winnerName} wins!\nPress Ready to play again.`);
-
-        // Show game over screen for local player
-        if (isLocalWinner) {
-          this.showGameOverScreen(true, winner?.score || 0);
+      // Pig King wins if winnerId equals GM id or special token
+      const gmId = (this.room.state as any).gameMasterId as string;
+      if (winnerId && (winnerId === gmId || winnerId === "__PIG__")) {
+        this.showWinBanner("pig");
+        this.statusText.setText("Pig King wins!\nPress Ready to play again.");
+        if (this.localPlayerIsGM) {
+          // GM wins
+          this.showGameOverScreen(true, 0);
+        } else {
+          // Birds lose
+          const localPlayer = this.room.state.players.get(this.localPlayerId) as PlayerState | undefined;
+          this.showGameOverScreen(false, localPlayer?.score || 0);
         }
-      } else if (playerCount > 0) {
+        return;
+      }
+
+      // Lobby messaging
+      this.clearWinBanner();
+      if (playerCount > 0) {
         const everyoneReady = readyCount > 0 && readyCount === playerCount;
         if (everyoneReady) {
           this.statusText.setText("All players are ready! Starting the round...");
@@ -2010,11 +2228,9 @@ export class Game extends Scene {
       }
     } else {
       const stagePrefix = stageValue > 0 ? `Stage ${stageValue}/${this.maxStage}\n` : "";
-      if (playerCount === 1) {
-        this.statusText.setText(`${stagePrefix}Flap to stay alive! Try to get a high score!`);
-      } else {
-        this.statusText.setText(`${stagePrefix}Flap to stay alive! Last bird standing wins.`);
-      }
+      // New win conditions: Birds win when Pig King dies; Pig King wins if all birds die
+      this.clearWinBanner();
+      this.statusText.setText(`${stagePrefix}Birds: survive and defeat the Pig King!`);
     }
     this.updateReadyUI();
     void this.updateDiscordActivityPresence();
@@ -2055,6 +2271,93 @@ export class Game extends Scene {
     const entry = this.placedObstacleSprites.get(id);
     if (entry) entry.img.destroy();
     this.placedObstacleSprites.delete(id);
+  }
+
+  private showWinBanner(kind: "birds" | "pig") {
+    if (this.lastWinBannerKind === kind && this.winBanner && this.winBanner.active) {
+      return;
+    }
+    this.clearWinBanner();
+
+    const width = Number(this.game.config.width);
+    const container = this.add.container(width / 2, 120).setDepth(200).setScrollFactor(0);
+    const isBirds = kind === "birds";
+
+    const accent = isBirds ? 0x2ecc71 : 0x9b59b6;
+    const titleText = isBirds ? "BIRDS WIN" : "PIG KING WINS";
+
+    const bg = this.add.rectangle(0, 0, 480, 88, 0x000000, 0.6).setOrigin(0.5).setStrokeStyle(3, accent, 0.95);
+    const title = this.add.text(0, 0, titleText, {
+      fontFamily: "Arial Black",
+      fontSize: 34,
+      color: "#ffffff",
+      stroke: "#000000",
+      strokeThickness: 6,
+      align: "center",
+    }).setOrigin(0.5);
+
+    container.add([bg, title]);
+    container.setScale(0.85);
+    this.tweens.add({ targets: container, scaleX: 1, scaleY: 1, duration: 220, ease: 'Back.out' });
+
+    // auto-hide after 3 seconds
+    this.winBannerTimeout = this.time.delayedCall(3000, () => this.clearWinBanner());
+    this.winBanner = container;
+    this.lastWinBannerKind = kind;
+  }
+
+  private clearWinBanner() {
+    if (this.winBannerTimeout) {
+      try { this.winBannerTimeout.remove(false); } catch {}
+      this.winBannerTimeout = undefined;
+    }
+    if (this.winBanner) {
+      this.winBanner.destroy(true);
+      this.winBanner = undefined;
+    }
+    this.lastWinBannerKind = undefined;
+  }
+
+  // Power-ups
+  private addPowerUp(pu: PowerUpState) {
+    const key = pu.sprite && this.textures.exists(pu.sprite) ? pu.sprite : "score-5";
+    const img = this.add.image(pu.x, pu.y, key).setDepth(6);
+    img.setOrigin(0.5, 0.5);
+    img.setScale(0.8);
+    this.powerUpSprites.set(pu.id, { img, targetX: pu.x, targetY: pu.y });
+  }
+
+  private updatePowerUp(pu: PowerUpState) {
+    const entry = this.powerUpSprites.get(pu.id);
+    if (!entry) return;
+    entry.targetX = pu.x;
+    entry.targetY = pu.y;
+  }
+
+  private removePowerUp(id: number) {
+    const entry = this.powerUpSprites.get(id);
+    if (entry) entry.img.destroy();
+    this.powerUpSprites.delete(id);
+  }
+
+  private showPowerUpPickup(x: number, y: number, label: string, isLocal: boolean) {
+    const txt = this.add.text(x, y - 24, label || "Power Up!", {
+      fontFamily: "Arial Black",
+      fontSize: 18,
+      color: isLocal ? "#ffe7a6" : "#d2e0ff",
+      stroke: "#000000",
+      strokeThickness: 4,
+      align: "center",
+    }).setOrigin(0.5).setDepth(30);
+
+    this.tweens.add({
+      targets: txt,
+      y: y - 64,
+      alpha: 0,
+      duration: 700,
+      ease: 'Quad.out',
+      onComplete: () => txt.destroy(),
+    });
   }
 
   private getReadyCount() {
