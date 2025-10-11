@@ -72,6 +72,15 @@ export class Preloader extends Scene {
     this.load.image("redbird-downflap", "redbird-downflap.png");
     this.load.image("redbird-midflap", "redbird-midflap.png");
     this.load.image("redbird-upflap", "redbird-upflap.png");
+    this.load.image("greenbird-downflap", "greenbird-downflap.png");
+    this.load.image("greenbird-midflap", "greenbird-midflap.png");
+    this.load.image("greenbird-upflap", "greenbird-upflap.png");
+    this.load.image("purplebird-downflap", "purplebird-downflap.png");
+    this.load.image("purplebird-midflap", "purplebird-midflap.png");
+    this.load.image("purplebird-upflap", "purplebird-upflap.png");
+    this.load.image("orangebird-downflap", "orangebird-downflap.png");
+    this.load.image("orangebird-midflap", "orangebird-midflap.png");
+    this.load.image("orangebird-upflap", "orangebird-upflap.png");
 
     this.load.setPath("/.proxy/assets/flappy-bird-assets/audio");
     this.load.audio("wing", ["wing.ogg", "wing.wav"]);
@@ -110,6 +119,39 @@ export class Preloader extends Scene {
         { key: "redbird-downflap" },
         { key: "redbird-midflap" },
         { key: "redbird-upflap" },
+      ],
+      frameRate: 12,
+      repeat: -1,
+    });
+
+    this.anims.create({
+      key: "green_fly",
+      frames: [
+        { key: "greenbird-downflap" },
+        { key: "greenbird-midflap" },
+        { key: "greenbird-upflap" },
+      ],
+      frameRate: 12,
+      repeat: -1,
+    });
+
+    this.anims.create({
+      key: "purple_fly",
+      frames: [
+        { key: "purplebird-downflap" },
+        { key: "purplebird-midflap" },
+        { key: "purplebird-upflap" },
+      ],
+      frameRate: 12,
+      repeat: -1,
+    });
+
+    this.anims.create({
+      key: "orange_fly",
+      frames: [
+        { key: "orangebird-downflap" },
+        { key: "orangebird-midflap" },
+        { key: "orangebird-upflap" },
       ],
       frameRate: 12,
       repeat: -1,

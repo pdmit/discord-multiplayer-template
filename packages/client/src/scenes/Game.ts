@@ -80,7 +80,7 @@ export class Game extends Scene {
   private volumeSliderHitArea?: Phaser.GameObjects.Zone;
   private volumeSliderKnob?: Phaser.GameObjects.Rectangle;
   private volumeText?: Phaser.GameObjects.Text;
-  private currentVolume: number = 0.4;  // Default volume
+  private currentVolume: number = 0.1;  // Default volume
   private isDraggingVolume: boolean = false;
 
   constructor() {

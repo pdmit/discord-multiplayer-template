@@ -18,7 +18,7 @@ export class GameRoom extends Room<GameState> {
   private pipeWidth = 52;
   private nextPipeId = 1;
   private elapsedSincePipe = 0;
-  private skins: Array<PlayerState["skin"]> = ["yellow", "blue", "red"];
+  private skins: Array<PlayerState["skin"]> = ["yellow", "blue", "red", "green", "purple", "orange"];
   private worldWidth = 1280;
   private worldHeight = 720;
   private pipeNoiseAmplitude = 200; // px
