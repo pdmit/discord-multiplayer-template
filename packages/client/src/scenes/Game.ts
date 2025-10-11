@@ -102,6 +102,16 @@ export class Game extends Scene {
   private gmPreviewSprite?: Phaser.GameObjects.Image;
   private gmToolButtons: Map<"top" | "bottom", { bg: Phaser.GameObjects.Rectangle; txt: Phaser.GameObjects.Text }> = new Map();
 
+  // Mirror server gap logic for client-side preview (constants must match server)
+  private readonly previewMaxPipeGap = 300;
+  private readonly previewMinPipeGap = 60;
+  private readonly previewGapShrinkPerSec = 2.4;
+
+  // GM gap guide lines (center +/- gap/2), drawn as dashed Graphics
+  private gmGapGfxTop?: Phaser.GameObjects.Graphics;
+  private gmGapGfxBottom?: Phaser.GameObjects.Graphics;
+  private gmXClampTint?: Phaser.GameObjects.Rectangle;
+
   constructor() {
     super("Game");
 
@@ -180,6 +190,10 @@ export class Game extends Scene {
       entry.img.x = Phaser.Math.Linear(entry.img.x, entry.targetX, interpolationAlpha);
       entry.img.y = Phaser.Math.Linear(entry.img.y, entry.targetY, interpolationAlpha);
     });
+    // Update GM gap guide lines (center +/- gap/2)
+    this.updateGmGapGuides();
+    // Update GM X-clamp tint overlay (right third)
+    this.updateGmXClampTint();
 
     // Periodic sync for ready state changes and running state
     if (this.room && this.room.state && this.room.state.players) {
@@ -564,6 +578,10 @@ export class Game extends Scene {
     // Create GM toolbar (hidden until we know local is GM)
     this.createGmToolbar();
     this.updateGmUiVisibility();
+    this.ensureGmGapGuides();
+    this.updateGmGapGuides();
+    this.ensureGmXClampTint();
+    this.updateGmXClampTint();
   }
 
   private updateSkinOptionsFromState() {
@@ -1147,6 +1165,10 @@ export class Game extends Scene {
     if (!this.localPlayerIsGM) {
       this.selectGmTool(null);
     }
+    // Toggle gap guide visibility with GM mode
+    this.gmGapGfxTop?.setVisible(this.localPlayerIsGM === true);
+    this.gmGapGfxBottom?.setVisible(this.localPlayerIsGM === true);
+    this.gmXClampTint?.setVisible(this.localPlayerIsGM === true);
   }
 
   private selectGmTool(kind: ("top" | "bottom") | null) {
@@ -1159,12 +1181,13 @@ export class Game extends Scene {
     }
     const key = kind === "top" ? "pipe" : "pipe-red";
     if (!this.gmPreviewSprite) {
-      this.gmPreviewSprite = this.add.image(0, 0, key).setDepth(49).setAlpha(0.5).setOrigin(0.5, 0);
+      this.gmPreviewSprite = this.add.image(0, 0, key).setDepth(49).setAlpha(0.5);
     } else {
       this.gmPreviewSprite.setTexture(key);
       this.gmPreviewSprite.setVisible(true);
     }
     this.gmPreviewSprite.setFlipY(kind === "top");
+    this.gmPreviewSprite.setOrigin(0.5, kind === "top" ? 1 : 0);
     this.updateGmToolSelectionHighlight();
   }
 
@@ -1201,11 +1224,19 @@ export class Game extends Scene {
   private updateGmPreviewPosition(pointer: Phaser.Input.Pointer) {
     if (!this.localPlayerIsGM || !this.gmToolSelected || !this.gmPreviewSprite) return;
     const p = this.getPointerPosition(pointer);
-    const height = Number(this.game.config.height);
-    const floorTop = height - 112; // same as base sprite y
-    const clampedX = Phaser.Math.Clamp(p.x, 0, Number(this.game.config.width));
-    const clampedY = Phaser.Math.Clamp(p.y, 0, floorTop - this.pipeHeight);
-    this.gmPreviewSprite.setPosition(clampedX, clampedY);
+    const yInput = this.gmToolSelected === "top" ? p.y - this.pipeHeight : p.y;
+    const { x, y } = this.getClampedGmPlacement(p.x, yInput, this.gmToolSelected);
+    if (this.gmToolSelected === "top") {
+      // Ensure bottom of the flipped top pipe follows the cursor
+      this.gmPreviewSprite.setFlipY(true);
+      this.gmPreviewSprite.setOrigin(0.5, 1);
+      this.gmPreviewSprite.setPosition(x, y + this.pipeHeight);
+    } else {
+      // Bottom pipe uses top-of-sprite anchor
+      this.gmPreviewSprite.setFlipY(false);
+      this.gmPreviewSprite.setOrigin(0.5, 0);
+      this.gmPreviewSprite.setPosition(x, y);
+    }
   }
 
   private placeGmObstacleAtPointer(pointer: Phaser.Input.Pointer) {
@@ -1214,11 +1245,135 @@ export class Game extends Scene {
       return; // only place during active rounds so server will accept and move them
     }
     const p = this.getPointerPosition(pointer);
-    const height = Number(this.game.config.height);
-    const floorTop = height - 112;
-    const x = Phaser.Math.Clamp(p.x, 0, Number(this.game.config.width));
-    const y = Phaser.Math.Clamp(p.y, 0, floorTop - this.pipeHeight);
+    const yInput = this.gmToolSelected === "top" ? p.y - this.pipeHeight : p.y;
+    const { x, y } = this.getClampedGmPlacement(p.x, yInput, this.gmToolSelected);
     this.room.send("gmPlaceObstacle", { kind: this.gmToolSelected, x, y });
+  }
+
+  private getClampedGmPlacement(rawX: number, rawY: number, kind: "top" | "bottom") {
+    const width = Number(this.game.config.width);
+    const height = Number(this.game.config.height);
+    const midY = height / 2;
+    const gap = this.getCurrentPipeGapClient();
+    const halfGap = gap / 2;
+
+    // X only in right third of screen
+    const minX = (2 / 3) * width;
+    const maxX = width;
+    const x = Phaser.Math.Clamp(rawX, minX, maxX);
+
+    if (kind === "bottom") {
+      // Top of bottom pipe in [midY + halfGap, screen bottom]
+      const yMin = midY + halfGap;
+      const yMax = height; // allow to go off-screen visually
+      const y = Phaser.Math.Clamp(rawY, yMin, yMax);
+      return { x, y };
+    } else {
+      // Clamp bottom of TOP pipe to [0, midY - halfGap], derive topY = bottom - pipeHeight
+      const desiredBottom = rawY + this.pipeHeight;
+      const bottomMin = 0;
+      const bottomMax = Math.max(bottomMin, midY - halfGap);
+      const clampedBottom = Phaser.Math.Clamp(desiredBottom, bottomMin, bottomMax);
+      const y = clampedBottom - this.pipeHeight;
+      return { x, y };
+    }
+  }
+
+  private getCurrentPipeGapClient() {
+    const difficulty = Number((this.room?.state as any)?.difficulty ?? 0);
+    const gap = Math.max(this.previewMinPipeGap, this.previewMaxPipeGap - (difficulty * this.previewGapShrinkPerSec));
+    return gap;
+  }
+
+  // Create (if missing) the dashed horizontal guide lines at center +/- gap/2 (only within X preview region)
+  private ensureGmGapGuides() {
+    if (!this.gmGapGfxTop) {
+      this.gmGapGfxTop = this.add.graphics().setDepth(48).setScrollFactor(0);
+    }
+    if (!this.gmGapGfxBottom) {
+      this.gmGapGfxBottom = this.add.graphics().setDepth(48).setScrollFactor(0);
+    }
+    const visible = this.localPlayerIsGM === true;
+    this.gmGapGfxTop.setVisible(visible);
+    this.gmGapGfxBottom.setVisible(visible);
+  }
+
+  // Position and redraw dashed guide lines based on current difficulty (gap), only inside right-third X region
+  private updateGmGapGuides() {
+    if (!this.gmGapGfxTop || !this.gmGapGfxBottom) return;
+    const visible = this.localPlayerIsGM === true;
+    this.gmGapGfxTop.setVisible(visible);
+    this.gmGapGfxBottom.setVisible(visible);
+    if (!visible) return;
+
+    const width = Number(this.game.config.width);
+    const height = Number(this.game.config.height);
+    const startX = (2 / 3) * width;
+    const endX = width;
+    const midY = height / 2;
+    const halfGap = this.getCurrentPipeGapClient() / 2;
+    const yTop = Phaser.Math.Clamp(midY - halfGap, 0, height);
+    const yBottom = Phaser.Math.Clamp(midY + halfGap, 0, height);
+
+    // Clear and redraw dashed segments
+    this.gmGapGfxTop.clear();
+    this.gmGapGfxBottom.clear();
+    this.drawDashedHLine(this.gmGapGfxTop, startX, endX, yTop, 0xffffff, 0.6, 2, 12, 8);
+    this.drawDashedHLine(this.gmGapGfxBottom, startX, endX, yBottom, 0xffffff, 0.6, 2, 12, 8);
+  }
+
+  // Helper to draw a dashed horizontal line using Graphics
+  private drawDashedHLine(
+    gfx: Phaser.GameObjects.Graphics,
+    x1: number,
+    x2: number,
+    y: number,
+    color = 0xffffff,
+    alpha = 0.6,
+    thickness = 2,
+    dash = 12,
+    gap = 8,
+  ) {
+    const start = Math.min(x1, x2);
+    const end = Math.max(x1, x2);
+    gfx.lineStyle(thickness, color, alpha);
+    let x = start;
+    while (x < end) {
+      const segEnd = Math.min(x + dash, end);
+      gfx.beginPath();
+      gfx.moveTo(x, y);
+      gfx.lineTo(segEnd, y);
+      gfx.strokePath();
+      x = segEnd + gap;
+    }
+  }
+
+  // Create/update the transparent blue tint over the right third (X clamp area)
+  private ensureGmXClampTint() {
+    if (this.gmXClampTint) return;
+    const width = Number(this.game.config.width);
+    const height = Number(this.game.config.height);
+    const rectWidth = width / 3;
+    const x = (2 / 3) * width + rectWidth / 2; // center of right third
+    const y = height / 2;
+    this.gmXClampTint = this.add
+      .rectangle(x, y, rectWidth, height, 0x3498db, 0.15)
+      .setOrigin(0.5)
+      .setDepth(47)
+      .setScrollFactor(0);
+    this.gmXClampTint.setVisible(this.localPlayerIsGM === true);
+  }
+
+  private updateGmXClampTint() {
+    if (!this.gmXClampTint) return;
+    const width = Number(this.game.config.width);
+    const height = Number(this.game.config.height);
+    const rectWidth = width / 3;
+    const x = (2 / 3) * width + rectWidth / 2;
+    const y = height / 2;
+    this.gmXClampTint.setPosition(x, y);
+    this.gmXClampTint.setSize(rectWidth, height);
+    this.gmXClampTint.setVisible(this.localPlayerIsGM === true);
   }
 
   private isPointerOverVolumeUI(pointer: Phaser.Input.Pointer) {

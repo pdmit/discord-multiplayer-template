@@ -230,13 +230,33 @@ export class GameRoom extends Room<GameState> {
         return;
       }
 
-      // Clamp to world bounds within reasonable limits
-      const minX = -200;
-      const maxX = this.worldWidth + 400;
-      const minY = 0;
-      const maxY = this.worldHeight - this.floorHeight - this.pipeHeight; // keep inside sky/floor
-      const clampedX = Math.max(minX, Math.min(maxX, x));
-      const clampedY = Math.max(minY, Math.min(maxY, y));
+      // Placement constraints
+      // 1) X only in right 1/3 of screen
+      const rightThirdMinX = Math.floor(this.worldWidth * (2 / 3));
+      const rightThirdMaxX = this.worldWidth;
+      const clampedX = Math.max(rightThirdMinX, Math.min(rightThirdMaxX, x));
+
+      // 2/3/4) Vertical ranges with modifier = getCurrentPipeGap()/2
+      // Allow sprites to extend off-screen except:
+      //  - bottom of TOP pipe cannot be above top of screen -> (topY + pipeHeight) >= 0
+      //  - top of BOTTOM pipe cannot be below bottom of screen -> (topY) <= worldHeight
+      const midY = this.worldHeight / 2;
+      const halfGap = this.getCurrentPipeGap() / 2;
+
+      let clampedY = y;
+      if (kind === "bottom") {
+        // Top of bottom pipe must be within [midY + halfGap, worldHeight]
+        const topMin = midY + halfGap;
+        const topMax = this.worldHeight;
+        clampedY = Math.max(topMin, Math.min(topMax, y));
+      } else {
+        // Clamp bottom of TOP pipe to [0, midY - halfGap], then derive topY = bottom - pipeHeight
+        const desiredBottom = y + this.pipeHeight;
+        const bottomMin = 0;
+        const bottomMax = Math.max(bottomMin, midY - halfGap);
+        const clampedBottom = Math.max(bottomMin, Math.min(bottomMax, desiredBottom));
+        clampedY = clampedBottom - this.pipeHeight;
+      }
 
       const obs = new PlacedObstacleState();
       obs.id = this.nextPlacedObstacleId++;
