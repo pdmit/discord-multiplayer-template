@@ -228,6 +228,7 @@ export class Game extends Scene {
     this.powerUpSprites.forEach((entry) => {
       entry.img.x = Phaser.Math.Linear(entry.img.x, entry.targetX, interpolationAlpha);
       entry.img.y = Phaser.Math.Linear(entry.img.y, entry.targetY, interpolationAlpha);
+      console.log("Power-up sprite position:", entry.img.x, entry.img.y);
     });
     // Update GM gap guide lines (center +/- gap/2)
     this.updateGmGapGuides();
@@ -272,6 +273,12 @@ export class Game extends Scene {
       const placed = (this.room.state as any).placedObstacles as any;
       if (currentRunning && placed && typeof placed.forEach === "function") {
         placed.forEach((obs: PlacedObstacleState) => this.updatePlacedObstacle(obs));
+      }
+
+      // Update power-ups positions from state each frame (mirrors pipe/obstacle pattern)
+      const powerUps = (this.room.state as any).powerUps as any;
+      if (currentRunning && powerUps && typeof powerUps.forEach === "function") {
+        powerUps.forEach((pu: PowerUpState) => this.updatePowerUp(pu));
       }
 
       this.room.state.players.forEach((player: PlayerState, sessionId: string) => {
@@ -1649,7 +1656,10 @@ export class Game extends Scene {
     // Hydrate power-ups (if any)
     const powerUpsState = (this.room.state as any).powerUps as any;
     if (powerUpsState && typeof powerUpsState.forEach === "function") {
-      powerUpsState.forEach((pu: PowerUpState) => this.addPowerUp(pu));
+      const powerUpsArray = powerUpsState as PowerUpState[];
+      powerUpsArray.forEach((pu: PowerUpState) => {
+        this.addPowerUp(pu);
+      });
     }
 
     // Subscribe for additions of pipes
@@ -1683,20 +1693,22 @@ export class Game extends Scene {
       });
     }
     // Subscribe for power-ups
-    const pu = (this.room.state as any).powerUps;
+    const pu = (this.room.state).powerUps;
     if (pu) {
       const pu$ = $(pu);
       pu$.onAdd((p: PowerUpState) => {
         if (!p) return;
         this.addPowerUp(p);
+        console.log("Power-up added:", p);
       });
       pu$.onRemove((p: PowerUpState | undefined) => {
         if (!p || typeof (p as any).id !== "number") return;
         this.removePowerUp((p as any).id);
+        console.log("Power-up removed:", p);
       });
-      pu$.onChange((p: PowerUpState | undefined) => {
-        if (!p) return;
-        this.updatePowerUp(p);
+      // Array-level onChange not needed for per-item movement; polling handles it.
+      pu$.onChange((_p: PowerUpState | undefined) => {
+        // no-op
       });
     }
 
@@ -1706,7 +1718,7 @@ export class Game extends Scene {
       this.showPowerUpPickup(payload?.x ?? 0, payload?.y ?? 0, payload?.name ?? "", isLocal);
       try {
         this.sound.play(isLocal ? "point" : "swoosh", { volume: isLocal ? 0.5 : 0.35 });
-      } catch {}
+      } catch { }
     });
 
     $(this.room.state).onChange((changes: any[]) => {
@@ -1819,7 +1831,7 @@ export class Game extends Scene {
   private flashPigHealthBar() {
     if (!this.pigBarFill || !this.pigBarBg) return;
     if (this.pigFlashTween) {
-      try { this.pigFlashTween.stop(); } catch {}
+      try { this.pigFlashTween.stop(); } catch { }
       this.pigBarFill.setAlpha(1);
       this.pigBarBg.setAlpha(0.9);
     }
@@ -2308,7 +2320,7 @@ export class Game extends Scene {
 
   private clearWinBanner() {
     if (this.winBannerTimeout) {
-      try { this.winBannerTimeout.remove(false); } catch {}
+      try { this.winBannerTimeout.remove(false); } catch { }
       this.winBannerTimeout = undefined;
     }
     if (this.winBanner) {
@@ -2320,8 +2332,8 @@ export class Game extends Scene {
 
   // Power-ups
   private addPowerUp(pu: PowerUpState) {
-    const key = pu.sprite && this.textures.exists(pu.sprite) ? pu.sprite : "score-5";
-    const img = this.add.image(pu.x, pu.y, key).setDepth(6);
+    const key = pu.sprite && this.textures.exists(pu.sprite) ? pu.sprite : "star";
+    const img = this.add.image(pu.x, pu.y, key).setDepth(60);
     img.setOrigin(0.5, 0.5);
     img.setScale(0.8);
     this.powerUpSprites.set(pu.id, { img, targetX: pu.x, targetY: pu.y });

@@ -8,7 +8,7 @@ class PowerUpDef {
     public name: string,
     public sprite: string,
     public intervalSec: number = 15,
-  ) {}
+  ) { }
 
   spawn(id: number, x: number, y: number): PowerUpState {
     const pu = new PowerUpState();
@@ -50,10 +50,10 @@ export class GameRoom extends Room<GameState> {
   private readonly stageCount = 5;
   private readonly stageDurationSeconds = 20; // seconds per stage escalation
   private readonly stageSpeedIncrement = 0.2; // +20% pipe speed per stage
-  private readonly powerUpIntervalSec = 15; // fallback interval if def not sampled
+  private readonly powerUpIntervalSec = 3; // fallback interval if def not sampled
   private powerUpDefs: PowerUpDef[] = [
-    new PowerUpDef("star", "Star", "score-5", 15),
-    new PowerUpDef("bomb", "Bomb", "bomb", 15),
+    new PowerUpDef("star", "Star", "star", 5),
+    new PowerUpDef("hammer", "Hammer", "hammer", 5),
   ];
   private currentPowerUpIntervalSec = this.powerUpIntervalSec;
 
@@ -644,7 +644,9 @@ export class GameRoom extends Room<GameState> {
     // Move power-ups with the world and remove off-screen
     for (let i = this.state.powerUps.length - 1; i >= 0; i -= 1) {
       const pu = this.state.powerUps[i];
-      pu.x -= this.pipeSpeed * delta;
+      //pu.x -= this.pipeSpeed * delta;
+      pu.x = pu.x - (this.pipeSpeed * delta);
+      //console.log("New pu.x for id:", pu.id, pu.x);
       if (pu.x < -this.pipeWidth) {
         const removed = this.state.powerUps.splice(i, 1)[0];
         logger.info(`PowerUp removed (off-screen): id=${removed?.id}, type=${(removed as any)?.type}`);
@@ -735,6 +737,101 @@ export class GameRoom extends Room<GameState> {
   }
 
   // -- Power-Ups ------------------------------------------------------------
+  // Compute blocked vertical ranges at a given X due to pipes/obstacles.
+  // Returns a list of [startY, endY] intervals (inclusive of a small margin)
+  private getBlockedYRangesAtX(x: number, minY: number, maxY: number): Array<[number, number]> {
+    const halfW = this.pipeWidth / 2;
+    const safety = this.powerUpPickupRadius + 4; // keep pickup circle away from edges
+
+    const ranges: Array<[number, number]> = [];
+
+    // Pipes: add top and bottom rectangles if x overlaps pipe column
+    for (const pipe of this.state.pipes) {
+      const left = pipe.x - halfW;
+      const right = pipe.x + halfW;
+      if (x >= left && x <= right) {
+        // top pipe: [Ytop, Ytop + pipeHeight]
+        const topStart = Math.max(minY, pipe.Ytop - safety);
+        const topEnd = Math.min(maxY, pipe.Ytop + this.pipeHeight + safety);
+        if (topStart < topEnd) {
+          ranges.push([topStart, topEnd]);
+        }
+        // bottom pipe: [Ybottom, Ybottom + pipeHeight]
+        const botStart = Math.max(minY, pipe.Ybottom - safety);
+        const botEnd = Math.min(maxY, pipe.Ybottom + this.pipeHeight + safety);
+        if (botStart < botEnd) {
+          ranges.push([botStart, botEnd]);
+        }
+      }
+    }
+
+    // GM-placed obstacles
+    for (const obs of this.state.placedObstacles) {
+      const left = obs.x - halfW;
+      const right = obs.x + halfW;
+      if (x >= left && x <= right) {
+        const start = Math.max(minY, obs.y - safety);
+        const end = Math.min(maxY, obs.y + this.pipeHeight + safety);
+        if (start < end) {
+          ranges.push([start, end]);
+        }
+      }
+    }
+
+    // Merge overlapping ranges
+    ranges.sort((a, b) => a[0] - b[0]);
+    const merged: Array<[number, number]> = [];
+    for (const r of ranges) {
+      const last = merged[merged.length - 1];
+      if (!last || r[0] > last[1]) {
+        merged.push([r[0], r[1]]);
+      } else {
+        last[1] = Math.max(last[1], r[1]);
+      }
+    }
+    return merged;
+  }
+
+  // Given blocked ranges, compute allowed segments within [minY, maxY] and pick a safe Y.
+  private pickSafePowerUpYAtX(x: number, minY: number, maxY: number): number | null {
+    if (!(maxY > minY)) return null;
+    const blocked = this.getBlockedYRangesAtX(x, minY, maxY);
+
+    // Build allowed ranges by subtracting blocked from [minY, maxY]
+    const allowed: Array<[number, number]> = [];
+    let cursor = minY;
+    for (const [bStart, bEnd] of blocked) {
+      if (bStart > cursor) {
+        allowed.push([cursor, Math.min(bStart, maxY)]);
+      }
+      cursor = Math.max(cursor, bEnd);
+      if (cursor >= maxY) break;
+    }
+    if (cursor < maxY) {
+      allowed.push([cursor, maxY]);
+    }
+
+    // Require a minimal span so pickup circle fits comfortably
+    const minSpan = Math.max(10, this.powerUpPickupRadius * 2);
+    const viable = allowed.filter(([a, b]) => b - a >= minSpan);
+    if (viable.length === 0) {
+      return null;
+    }
+
+    // Prefer the largest allowed range to reduce edge clipping, then pick uniformly within it
+    let best: [number, number] = viable[0];
+    let bestLen = best[1] - best[0];
+    for (const seg of viable) {
+      const len = seg[1] - seg[0];
+      if (len > bestLen) {
+        best = seg;
+        bestLen = len;
+      }
+    }
+    const y = best[0] + Math.random() * (best[1] - best[0]);
+    return y;
+  }
+
   private spawnPowerUp() {
     const def = this.powerUpDefs[Math.floor(Math.random() * this.powerUpDefs.length)] || this.powerUpDefs[0];
     const id = this.nextPowerUpId++;
@@ -746,7 +843,15 @@ export class GameRoom extends Room<GameState> {
     const bottomMargin = 80;
     const minY = topMargin;
     const maxY = Math.max(minY, floorY - bottomMargin);
-    const y = minY + Math.random() * (maxY - minY);
+    // Pick a safe Y that avoids overlapping pipes/obstacles at this X
+    const picked = this.pickSafePowerUpYAtX(x, minY, maxY);
+    if (picked == null) {
+      logger.warn(`PowerUp spawn skipped: no safe Y at x=${x.toFixed(1)} within [${minY}, ${maxY}]`);
+      // If no viable slot, try again sooner next tick by slightly biasing the timer
+      this.powerUpElapsed = Math.max(0, this.powerUpElapsed - 0.5);
+      return;
+    }
+    const y = picked;
     const pu = def.spawn(id, x, y);
     this.state.powerUps.push(pu);
     this.currentPowerUpIntervalSec = def.intervalSec || this.powerUpIntervalSec;
@@ -759,7 +864,7 @@ export class GameRoom extends Room<GameState> {
         // Award points; treat as passing two pipes
         player.score += 2;
         break;
-      case "bomb":
+      case "hammer":
         // Deal damage to Pig King
         this.damagePigKing(1);
         break;

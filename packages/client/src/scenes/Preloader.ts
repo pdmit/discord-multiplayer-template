@@ -83,7 +83,8 @@ export class Preloader extends Scene {
     this.load.image("orangebird-upflap", "orangebird-upflap.png");
 
     // Power-ups
-    this.load.image("bomb", "bomb.png");
+    this.load.image("star", "star_32.png");
+    this.load.image("hammer", "hammer_32.png");
     // Pig King avatar
     this.load.image("pig-king-cropped", "pig-king-cropped.png");
 
