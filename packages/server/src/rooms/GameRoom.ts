@@ -42,6 +42,7 @@ export class GameRoom extends Room<GameState> {
   private elapsedSincePipe = 0;
   private powerUpElapsed = 0; // seconds
   private obstacleDebugAccumulator = 0; // seconds
+  private gmCharges = new Map<string, { charges: number; lastRechargeAt: number }>();
   private readonly powerUpPickupRadius = 28; // px
   private skins: Array<PlayerState["skin"]> = ["yellow", "blue", "red", "green", "purple", "orange"];
   private worldWidth = 1280;
@@ -223,6 +224,10 @@ export class GameRoom extends Room<GameState> {
     if (canBeGm) {
       this.state.gameMasterId = client.sessionId;
       logger.info(`Assigned Game Master role to ${client.sessionId}`);
+      // Initialize GM charges (2 max, 5s recharge)
+      const now = Date.now();
+      this.gmCharges.set(client.sessionId, { charges: 2, lastRechargeAt: now });
+      client.send("gmChargeUpdate", { charges: 2, max: 2, nextInMs: 0 });
     }
     // Only birds get a skin; GM does not reserve a skin
     if (player.role === "bird") {
@@ -248,6 +253,29 @@ export class GameRoom extends Room<GameState> {
 
       if (!this.state.running) {
         logger.warn(`gmPlaceObstacle rejected - game not running`);
+        return;
+      }
+
+      // Charge gating
+      const now = Date.now();
+      let entry = this.gmCharges.get(client.sessionId);
+      if (!entry) {
+        entry = { charges: 2, lastRechargeAt: now };
+        this.gmCharges.set(client.sessionId, entry);
+      }
+      // Recharge if time elapsed
+      if (entry.charges < 2) {
+        const elapsed = now - entry.lastRechargeAt;
+        if (elapsed >= 5000) {
+          const gained = Math.floor(elapsed / 5000);
+          entry.charges = Math.min(2, entry.charges + gained);
+          entry.lastRechargeAt += gained * 5000;
+        }
+      }
+      const nextInMs = entry.charges >= 2 ? 0 : (5000 - ((now - entry.lastRechargeAt) % 5000));
+      if (entry.charges <= 0) {
+        logger.warn(`gmPlaceObstacle rejected - no charges (next in ${nextInMs}ms)`);
+        client.send("gmChargeUpdate", { charges: entry.charges, max: 2, nextInMs });
         return;
       }
 
@@ -300,6 +328,11 @@ export class GameRoom extends Room<GameState> {
       this.state.placedObstacles.push(obs);
       logger.info(`GM placed obstacle: id=${obs.id}, kind=${kind}, x=${obs.x}, y=${obs.y}`);
       logger.debug("placedObstacles length after add", { count: this.state.placedObstacles.length });
+
+      // Spend charge and notify
+      entry.charges = Math.max(0, entry.charges - 1);
+      const nextAfterSpend = entry.charges >= 2 ? 0 : (5000 - ((now - entry.lastRechargeAt) % 5000));
+      client.send("gmChargeUpdate", { charges: entry.charges, max: 2, nextInMs: nextAfterSpend });
     });
   }
 
@@ -312,6 +345,7 @@ export class GameRoom extends Room<GameState> {
       this.state.gameMasterId = "";
       logger.info(`Cleared Game Master role after ${client.sessionId} left`);
     }
+    this.gmCharges.delete(client.sessionId);
 
     if (this.state.players.size === 0) {
       this.state.running = false;
@@ -544,6 +578,15 @@ export class GameRoom extends Room<GameState> {
       }
     }
 
+    // Remove off-screen power-ups (unordered removals supported)
+    for (let i = this.state.powerUps.length - 1; i >= 0; i -= 1) {
+      const pu = this.state.powerUps[i];
+      if (pu.x < -this.pipeWidth) {
+        const removed = this.state.powerUps.splice(i, 1)[0];
+        logger.info(`PowerUp removed (off-screen): id=${removed?.id}, type=${(removed as any)?.type}`);
+      }
+    }
+
     for (const [, player] of this.state.players) {
       if ((player as any).role === "gm") {
         continue; // spectators not updated
@@ -632,9 +675,6 @@ export class GameRoom extends Room<GameState> {
 
     for (const pipe of this.state.pipes) {
       pipe.x -= this.pipeSpeed * delta;
-      // if (pipe.id == 1) {
-      //   console.log(pipe.x);
-      // }
     }
 
     for (const obs of this.state.placedObstacles) {
@@ -646,11 +686,6 @@ export class GameRoom extends Room<GameState> {
       const pu = this.state.powerUps[i];
       //pu.x -= this.pipeSpeed * delta;
       pu.x = pu.x - (this.pipeSpeed * delta);
-      //console.log("New pu.x for id:", pu.id, pu.x);
-      if (pu.x < -this.pipeWidth) {
-        const removed = this.state.powerUps.splice(i, 1)[0];
-        logger.info(`PowerUp removed (off-screen): id=${removed?.id}, type=${(removed as any)?.type}`);
-      }
     }
 
     // Periodic debug summary for placed obstacles movement

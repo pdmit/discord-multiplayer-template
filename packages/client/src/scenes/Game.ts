@@ -115,6 +115,10 @@ export class Game extends Scene {
   private gmToolSelected: ("top" | "bottom") | null = null;
   private gmPreviewSprite?: Phaser.GameObjects.Image;
   private gmToolButtons: Map<"top" | "bottom", { bg: Phaser.GameObjects.Rectangle; txt: Phaser.GameObjects.Text }> = new Map();
+  private gmCharges: number = 2;
+  private gmMaxCharges: number = 2;
+  private gmNextReadyAt: number = 0;
+  private gmChargeText?: Phaser.GameObjects.Text;
 
   // Mirror server gap logic for client-side preview (constants must match server)
   private readonly previewMaxPipeGap = 300;
@@ -234,6 +238,8 @@ export class Game extends Scene {
     this.updateGmGapGuides();
     // Update GM X-clamp tint overlay (right third)
     this.updateGmXClampTint();
+    // Update GM charge UI
+    this.updateGmChargeUi();
 
     // Periodic sync for ready state changes and running state
     if (this.room && this.room.state && this.room.state.players) {
@@ -785,6 +791,10 @@ export class Game extends Scene {
   }
 
   private setSkinSelectionVisible(visible: boolean) {
+    if (!this.scene || !this.scene.sys) {
+      console.warn("Scene is not initialized or has been destroyed.");
+      return;
+    }
     if (!this.skinSelectionContainer) {
       return;
     }
@@ -1160,7 +1170,7 @@ export class Game extends Scene {
     const width = Number(this.game.config.width);
     const margin = 20;
     const panelWidth = 160;
-    const panelHeight = 160;
+    const panelHeight = 200;
     const x = width - panelWidth / 2 - margin;
     const y = 360;
 
@@ -1203,6 +1213,17 @@ export class Game extends Scene {
 
     makeBtn(-20, "Top Pipe", 0x34495e, "top");
     makeBtn(30, "Bottom Pipe", 0x2c3e50, "bottom");
+
+    // Charges / cooldown label
+    this.gmChargeText = this.add.text(0, 80, "Charges: 2/2 • Ready", {
+      fontFamily: "Arial Black",
+      fontSize: 16,
+      color: "#ffffff",
+      stroke: "#000000",
+      strokeThickness: 4,
+      align: "center",
+    }).setOrigin(0.5);
+    container.add(this.gmChargeText);
 
     this.gmToolbar = container;
     container.setVisible(false);
@@ -1292,6 +1313,12 @@ export class Game extends Scene {
     if (!this.room || !this.gmToolSelected) return;
     if (!(this.room.state as any)?.running) {
       return; // only place during active rounds so server will accept and move them
+    }
+    // Client-side gate to avoid spamming when out of charges
+    if (this.localPlayerIsGM && this.gmCharges <= 0) {
+      // Optionally flash the charge text
+      try { this.sound.play("swoosh", { volume: 0.2 }); } catch { }
+      return;
     }
     const p = this.getPointerPosition(pointer);
     const yInput = this.gmToolSelected === "top" ? p.y - this.pipeHeight : p.y;
@@ -1423,6 +1450,20 @@ export class Game extends Scene {
     this.gmXClampTint.setPosition(x, y);
     this.gmXClampTint.setSize(rectWidth, height);
     this.gmXClampTint.setVisible(this.localPlayerIsGM === true);
+  }
+
+  private updateGmChargeUi() {
+    if (!this.gmChargeText) return;
+    const visible = this.localPlayerIsGM === true;
+    this.gmChargeText.setVisible(visible);
+    if (!visible) return;
+
+    const now = Date.now();
+    let remaining = Math.max(0, this.gmNextReadyAt - now);
+    if (this.gmCharges >= this.gmMaxCharges) remaining = 0;
+    const seconds = Math.ceil(remaining / 1000);
+    const label = remaining > 0 ? `Next in ${seconds}s` : `Ready`;
+    this.gmChargeText.setText(`Charges: ${this.gmCharges}/${this.gmMaxCharges} • ${label}`);
   }
 
   private isPointerOverVolumeUI(pointer: Phaser.Input.Pointer) {
@@ -1719,6 +1760,17 @@ export class Game extends Scene {
       try {
         this.sound.play(isLocal ? "point" : "swoosh", { volume: isLocal ? 0.5 : 0.35 });
       } catch { }
+    });
+
+    // GM charge updates
+    this.room.onMessage("gmChargeUpdate", (payload: { charges?: number; max?: number; nextInMs?: number }) => {
+      try {
+        if (typeof payload?.charges === "number") this.gmCharges = payload.charges;
+        if (typeof payload?.max === "number") this.gmMaxCharges = payload.max;
+        const nextMs = Math.max(0, Number(payload?.nextInMs ?? 0));
+        this.gmNextReadyAt = Date.now() + nextMs;
+        this.updateGmChargeUi();
+      } catch { /* ignore */ }
     });
 
     $(this.room.state).onChange((changes: any[]) => {

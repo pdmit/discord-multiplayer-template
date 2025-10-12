@@ -63,7 +63,7 @@ export class MainMenu extends Scene {
     });
 
     // Spectate as Game Master button
-    makeButton(baseY + spacing, "Spectate as Game Master", 0x8e44ad, () => {
+    makeButton(baseY + spacing, "Play as Pig", 0x8e44ad, () => {
       this.scene.start("Game", { role: "gm" });
     });
 
