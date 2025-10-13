@@ -7,9 +7,9 @@ export class PlayerState extends Schema {
   @type("string")
   skin = "yellow";
 
-  // spectator role support: "bird" (default) or "gm" (spectator)
+  // Role: "bird" (active player), "gm" (Pig King controller), or "spectator" (passive viewer)
   @type("string")
-  role: "bird" | "gm" = "bird";
+  role: "bird" | "gm" | "spectator" = "bird";
 
   @type("number")
   y = 0;

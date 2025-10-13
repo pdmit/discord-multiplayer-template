@@ -15,7 +15,7 @@ type PlayerState = {
   score: number;
   lastPassedPipeId: number;
   ready: boolean;
-  role?: "bird" | "gm"; // optional for backward compat
+  role?: "bird" | "gm" | "spectator"; // optional for backward compat
   birdHighScore?: number; // personal best as bird (pipes)
   pigBestTime?: number;   // personal best as GM (seconds, lower is better)
 };
@@ -121,6 +121,7 @@ export class Game extends Scene {
   private readonly showDebugInfo: boolean;
   private joinRole: "bird" | "gm" = "bird";
   private localPlayerIsGM: boolean = false;
+  private localPlayerRole: "bird" | "gm" | "spectator" = "bird";
 
   private stagePopup?: Phaser.GameObjects.Container;
   private volumeSlider?: Phaser.GameObjects.Rectangle;
@@ -743,8 +744,8 @@ export class Game extends Scene {
     if (!this.room || !this.room.state) {
       return;
     }
-    // Never show or rebuild selection UI for GM; keep options cached only
-    if (this.localPlayerIsGM === true) {
+    // Never show or rebuild selection UI for non-playing roles; keep options cached only
+    if (this.localPlayerIsGM === true || this.localPlayerRole === "spectator") {
       const stateOptionsGM = (this.room.state as any).skinOptions as Array<string> | undefined;
       if (stateOptionsGM) {
         this.skinOptions = Array.from(stateOptionsGM);
@@ -796,8 +797,8 @@ export class Game extends Scene {
   }
 
   private rebuildSkinSelection() {
-    // Do not build the selection UI for GM
-    if (this.localPlayerIsGM === true) {
+    // Do not build the selection UI for non-playing roles
+    if (this.localPlayerIsGM === true || this.localPlayerRole === "spectator") {
       this.setSkinSelectionVisible(false);
       return;
     }
@@ -914,7 +915,7 @@ export class Game extends Scene {
 
     this.skinSelectionContainer = container;
     // Keep logic consistent with lobby UI: never show during a running round or for GM
-    const canShow = !this.room?.state?.running && this.getPlayerCount() > 0 && !this.localPlayerIsGM;
+    const canShow = !this.room?.state?.running && this.getPlayerCount() > 0 && this.localPlayerRole === "bird";
     this.setSkinSelectionVisible(canShow);
   }
 
@@ -926,8 +927,8 @@ export class Game extends Scene {
     if (!this.skinSelectionContainer) {
       return;
     }
-    // Force-hide for GM or while running
-    if (this.localPlayerIsGM === true || (this.room?.state as any)?.running) {
+    // Force-hide for GM, spectators, or while running
+    if (this.localPlayerIsGM === true || this.localPlayerRole === "spectator" || (this.room?.state as any)?.running) {
       visible = false;
     }
     this.skinSelectionContainer.setVisible(visible);
@@ -1278,8 +1279,8 @@ export class Game extends Scene {
       return;
     }
 
-    // Spectators do not flap
-    if (this.localPlayerIsGM) {
+    // Non-playing roles do not flap
+    if (this.localPlayerRole !== "bird") {
       return;
     }
 
@@ -1298,13 +1299,20 @@ export class Game extends Scene {
       return;
     }
 
-    // Update header text
-    this.gameOverText.setText(won ? "YOU WIN!" : "GAME OVER");
-    this.gameOverText.setColor(won ? "#00ff00" : "#ff0000");
-
     const state: any = this.room?.state as any;
     const local = state?.players?.get?.(this.localPlayerId) as PlayerState | undefined;
-    const isGM = this.localPlayerIsGM === true || (local?.role as any) === "gm";
+    const localRole = (local?.role as any) || this.localPlayerRole;
+    const isGM = this.localPlayerIsGM === true || localRole === "gm";
+    const isSpectator = localRole === "spectator";
+
+    // Update header text
+    if (isSpectator) {
+      this.gameOverText.setText("ROUND ENDED");
+      this.gameOverText.setColor("#ffffff");
+    } else {
+      this.gameOverText.setText(won ? "YOU WIN!" : "GAME OVER");
+      this.gameOverText.setColor(won ? "#00ff00" : "#ff0000");
+    }
 
     // Round score: birds -> pipes passed; GM -> time to end in seconds
     let roundScoreText = "Score: 0";
@@ -1312,16 +1320,20 @@ export class Game extends Scene {
       const tSec = Number(state?.difficulty ?? 0);
       const t = Math.max(0, Math.round(tSec * 10) / 10);
       roundScoreText = `Time: ${t}s`;
-    } else {
+    } else if (!isSpectator) {
       const s = typeof roundScoreHint === "number" ? roundScoreHint : Number(local?.score ?? 0);
       roundScoreText = `Score: ${Math.max(0, Math.floor(s))}`;
+    } else {
+      roundScoreText = "Spectating";
     }
     this.gameOverScoreText?.setText(roundScoreText);
 
     // Personal high
     let highText = isGM
       ? `Best GM time: -`
-      : `High: ${Math.max(0, Math.floor(Number((local as any)?.birdHighScore ?? 0)))}`;
+      : isSpectator
+        ? `You were spectating`
+        : `High: ${Math.max(0, Math.floor(Number((local as any)?.birdHighScore ?? 0)))}`;
     if (isGM) {
       const best = Number((local as any)?.pigBestTime ?? 0);
       highText = best > 0 ? `Best GM time: ${Math.round(best * 10) / 10}s` : `Best GM time: -`;
@@ -1361,7 +1373,18 @@ export class Game extends Scene {
       });
     }
 
-    console.log(`Game over screen shown - Won: ${won}, Role: ${isGM ? "GM" : "Bird"}`);
+    // Button visibility/content adjustments
+    if (isSpectator) {
+      try { this.restartButton?.setVisible(false); } catch { /* noop */ }
+      try { this.restartButtonLabel?.setVisible(false); } catch { /* noop */ }
+      try { this.returnButtonLabel?.setText("Return to Menu to Play"); } catch { /* noop */ }
+    } else {
+      try { this.restartButton?.setVisible(true); } catch { /* noop */ }
+      try { this.restartButtonLabel?.setVisible(true); } catch { /* noop */ }
+      try { this.returnButtonLabel?.setText("Return to Menu"); } catch { /* noop */ }
+    }
+
+    console.log(`Game over screen shown - Won: ${won}, Role: ${isSpectator ? "Spectator" : (isGM ? "GM" : "Bird")}`);
   }
 
   private restartGame() {
@@ -1601,6 +1624,7 @@ export class Game extends Scene {
     // Client-side gate to avoid spamming when out of charges
     if (this.localPlayerIsGM && this.gmCharges <= 0) {
       // Optionally flash the charge text
+      console.log("Out of GM charges, cannot place obstacle");
       try { this.sound.play("swoosh", { volume: 0.05 }); } catch { }
       return;
     }
@@ -1838,8 +1862,8 @@ export class Game extends Scene {
     const running = this.room.state.running as boolean;
     const playerCount = this.getPlayerCount();
     const readyCount = this.getReadyCount();
-    // Do not show Ready UI for spectators (GM)
-    const showLobbyUi = !running && playerCount > 0 && !this.localPlayerIsGM;
+    // Do not show Ready UI for non-playing roles (GM or spectator)
+    const showLobbyUi = !running && playerCount > 0 && this.localPlayerRole === "bird";
 
     console.log("Ready UI state:", {
       running,
@@ -2205,6 +2229,7 @@ export class Game extends Scene {
         const nextMs = Math.max(0, Number(payload?.nextInMs ?? 0));
         this.gmNextReadyAt = Date.now() + nextMs;
         this.updateGmChargeUi();
+        console.log ("GM charge update:", this.gmCharges, "/", this.gmMaxCharges, "next in", nextMs, "ms");
       } catch { /* ignore */ }
     });
 
@@ -2444,8 +2469,10 @@ export class Game extends Scene {
 
   private addPlayer(sessionId: string, player: PlayerState) {
     console.log("Adding player:", sessionId, "with ready state:", player.ready);
-    const isGM = (player.role as any) === "gm";
-    if (!isGM) {
+    const role = (player.role as any);
+    const isGM = role === "gm";
+    const isSpectator = role === "spectator";
+    if (!isGM && !isSpectator) {
       const sprite = this.add.sprite(this.birdX, player.y, this.getBirdTexture(player.skin));
       sprite.setDepth(5);
       this.applySkinToSprite(sprite, player.skin);
@@ -2467,11 +2494,12 @@ export class Game extends Scene {
 
     if (sessionId === this.localPlayerId) {
       this.localPlayerReady = player.ready;
-      this.localPlayerIsGM = isGM;
-      console.log("Set local player ready state to:", player.ready, "isGM:", isGM);
+      this.localPlayerIsGM = isGM === true; // GM toolbar only for true GM
+      this.localPlayerRole = isGM ? "gm" : (isSpectator ? "spectator" : "bird");
+      console.log("Set local player ready state to:", player.ready, "role:", this.localPlayerRole);
       this.updateGmUiVisibility();
       // Ensure GM never sees skin selection UI
-      if (this.localPlayerIsGM) {
+      if (this.localPlayerIsGM || this.localPlayerRole === "spectator") {
         this.setSkinSelectionVisible(false);
         try { this.skinSelectionContainer?.destroy(true); } catch { /* noop */ }
         this.skinSelectionContainer = undefined;
@@ -2479,7 +2507,7 @@ export class Game extends Scene {
       }
     }
 
-    if (!isGM) {
+    if (!isGM && !isSpectator) {
       this.syncPlayer(sessionId, player, []);
     }
     this.refreshScoreboard();
@@ -2812,9 +2840,13 @@ export class Game extends Scene {
       }
 
       const lines = players.map((player) => {
-        // Game Master spectates only
-        if ((player as any).role === "gm") {
+        // Non-playing roles
+        const role = (player as any).role;
+        if (role === "gm") {
           return `${player.isLocal ? "* " : ""}${player.name} (Pig King)`;
+        }
+        if (role === "spectator") {
+          return `${player.isLocal ? "* " : ""}${player.name} (Spectator)`;
         }
         const prefix = player.isLocal ? "▶ " : "";
         if (running) {
@@ -2865,9 +2897,9 @@ export class Game extends Scene {
       // Team win handling
       if (winnerId === "__BIRDS__") {
         this.showWinBanner("birds");
-        this.statusText.setText("Birds win!\nPress Ready to play again.");
-        // Show summary: birds (non-GM) show their round score; GM shows loss/time summary
-        const isLocalBird = !this.localPlayerIsGM;
+        this.statusText.setText(this.localPlayerRole === "spectator" ? "Birds win!\nReturn to Menu to play next round." : "Birds win!\nPress Ready to play again.");
+        // Show summary: birds show their round score; GM shows loss/time summary; spectators get neutral panel
+        const isLocalBird = this.localPlayerRole === "bird";
         const localPlayer = this.room.state.players.get(this.localPlayerId) as PlayerState | undefined;
         if (isLocalBird) {
           this.showGameOverScreen(true, localPlayer?.score ?? 0);
@@ -2881,8 +2913,8 @@ export class Game extends Scene {
       const gmId = (this.room.state as any).gameMasterId as string;
       if (winnerId && (winnerId === gmId || winnerId === "__PIG__")) {
         this.showWinBanner("pig");
-        this.statusText.setText("Pig King wins!\nPress Ready to play again.");
-        if (this.localPlayerIsGM) {
+        this.statusText.setText(this.localPlayerRole === "spectator" ? "Pig King wins!\nReturn to Menu to play next round." : "Pig King wins!\nPress Ready to play again.");
+        if (this.localPlayerRole === "gm") {
           // GM wins -> show time summary
           this.showGameOverScreen(true);
         } else {
@@ -2906,8 +2938,11 @@ export class Game extends Scene {
         this.statusText.setText("Waiting for players to join...");
       }
     } else {
-      // Hide status text during the round (it is animated once at start)
-      if (!this.isStatusIntroActive) {
+      // In-game: show a spectating hint for non-playing users, otherwise hide
+      if (this.localPlayerRole === "spectator") {
+        try { this.statusText.setVisible(true).setAlpha(1); } catch { /* noop */ }
+        this.statusText.setText("Game in progress. You are spectating.");
+      } else if (!this.isStatusIntroActive) {
         try { this.statusText.setVisible(false); } catch { /* noop */ }
       }
       // Ensure lobby-only UI is hidden while in-game
@@ -2925,7 +2960,7 @@ export class Game extends Scene {
 
     let count = 0;
     this.room.state.players.forEach((player: PlayerState) => {
-      if ((player.role as any) !== "gm") {
+      if ((player.role as any) === "bird") {
         count += 1;
       }
     });
@@ -3225,7 +3260,7 @@ export class Game extends Scene {
     }
     let count = 0;
     this.room.state.players.forEach((player: PlayerState, sessionId: string) => {
-      if ((player.role as any) === "gm") {
+      if ((player.role as any) !== "bird") {
         return;
       }
       if (player.ready) {

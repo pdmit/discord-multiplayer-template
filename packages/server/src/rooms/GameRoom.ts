@@ -46,6 +46,8 @@ export class GameRoom extends Room<GameState> {
   private powerUpElapsed = 0; // seconds
   private obstacleDebugAccumulator = 0; // seconds
   private gmCharges = new Map<string, { charges: number; lastRechargeAt: number }>();
+  private numObstacleCharges = 3;
+  private obstacleRechargeSeconds = 5;
   private readonly powerUpPickupRadius = 28; // px
   private skins: Array<PlayerState["skin"]> = ["yellow", "blue", "red", "green", "purple", "orange"];
   private worldWidth = 1280;
@@ -112,6 +114,28 @@ export class GameRoom extends Room<GameState> {
     logger.info(`Pipe speed adjusted to ${this.pipeSpeed.toFixed(2)} (stage ${clampedStage})`);
   }
 
+  private sendGMChargeUpdate(sessionId: string) {
+    const client = this.clients.find(c => c.sessionId === sessionId);
+    if (!client) return;
+
+    const now = Date.now();
+    let entry = this.gmCharges.get(sessionId);
+    if (!entry) {
+      entry = { charges: this.numObstacleCharges, lastRechargeAt: now };
+      this.gmCharges.set(sessionId, entry);
+    }
+
+    const nextInMs = entry.charges >= this.numObstacleCharges 
+      ? 0 
+      : (this.obstacleRechargeSeconds * 1000 - ((now - entry.lastRechargeAt) % (this.obstacleRechargeSeconds * 1000)));
+
+    client.send("gmChargeUpdate", { 
+      charges: entry.charges, 
+      max: this.numObstacleCharges, 
+      nextInMs 
+    });
+  }
+
   onCreate(): void {
     // Properly register the state with Colyseus (ensures correct change-tree + ref ordering)
     this.setState(new GameState());
@@ -133,8 +157,8 @@ export class GameRoom extends Room<GameState> {
         return;
       }
 
-      // Ignore flaps from spectators (Game Master)
-      if ((player as any).role === "gm") {
+      // Ignore flaps from non-playing roles (GM or spectator)
+      if ((player as any).role === "gm" || (player as any).role === "spectator") {
         return;
       }
 
@@ -153,9 +177,9 @@ export class GameRoom extends Room<GameState> {
         return;
       }
 
-      // Spectators cannot ready up
-      if ((player as any).role === "gm") {
-        logger.warn(`Rejected setReady - spectator (gm) ${client.sessionId}`);
+      // Non-playing roles cannot ready up
+      if ((player as any).role === "gm" || (player as any).role === "spectator") {
+        logger.warn(`Rejected setReady - non-player (${(player as any).role}) ${client.sessionId}`);
         return;
       }
 
@@ -174,9 +198,9 @@ export class GameRoom extends Room<GameState> {
         return;
       }
 
-      // Spectators (GM) cannot select a skin
-      if ((player as any).role === "gm") {
-        logger.warn(`selectSkin rejected - spectator (gm) ${client.sessionId}`);
+      // Non-playing roles cannot select a skin
+      if ((player as any).role === "gm" || (player as any).role === "spectator") {
+        logger.warn(`selectSkin rejected - non-player (${(player as any).role}) ${client.sessionId}`);
         return;
       }
 
@@ -221,19 +245,26 @@ export class GameRoom extends Room<GameState> {
 
     const player = new PlayerState();
     player.name = options?.name || `Bird ${client.sessionId.slice(0, 4)}`;
-    // Role requested by client; enforce single GM
+    // Role requested by client; assign spectator if a round is running
     const requestedRole = options?.role === "gm" ? "gm" : "bird";
-    const canBeGm = requestedRole === "gm" && !this.hasGameMaster();
-    player.role = canBeGm ? "gm" : "bird";
-    if (canBeGm) {
+    let assignedRole: PlayerState["role"] = "bird";
+    if (this.state.running) {
+      assignedRole = "spectator";
+    } else if (requestedRole === "gm" && !this.hasGameMaster()) {
+      assignedRole = "gm";
+    } else {
+      assignedRole = "bird";
+    }
+    player.role = assignedRole;
+    if (assignedRole === "gm") {
       this.state.gameMasterId = client.sessionId;
       logger.info(`Assigned Game Master role to ${client.sessionId}`);
       // Initialize GM charges (2 max, 5s recharge)
       const now = Date.now();
-      this.gmCharges.set(client.sessionId, { charges: 3, lastRechargeAt: now });
-      client.send("gmChargeUpdate", { charges: 3, max: 3, nextInMs: 0 });
+      this.gmCharges.set(client.sessionId, { charges: this.numObstacleCharges, lastRechargeAt: now });
+      this.sendGMChargeUpdate(client.sessionId);
     }
-    // Only birds get a skin; GM does not reserve a skin
+    // Only birds get a skin; GM and spectators do not reserve a skin
     if (player.role === "bird") {
       player.skin = this.assignSkin();
     } else {
@@ -268,18 +299,24 @@ export class GameRoom extends Room<GameState> {
         this.gmCharges.set(client.sessionId, entry);
       }
       // Recharge if time elapsed
-      if (entry.charges < 3) {
+      const chargesBeforeRecharge = entry.charges;
+      if (entry.charges < this.numObstacleCharges) {
         const elapsed = now - entry.lastRechargeAt;
-        if (elapsed >= 5000) {
-          const gained = Math.floor(elapsed / 5000);
-          entry.charges = Math.min(2, entry.charges + gained);
-          entry.lastRechargeAt += gained * 5000;
+        if (elapsed >= this.obstacleRechargeSeconds * 1000) {
+          const gained = Math.floor(elapsed / (this.obstacleRechargeSeconds * 1000));
+          entry.charges = Math.min(this.numObstacleCharges, entry.charges + gained);
+          entry.lastRechargeAt += gained * this.obstacleRechargeSeconds * 1000;
+          
+          // Notify GM if charges were actually recharged
+          if (entry.charges > chargesBeforeRecharge) {
+            this.sendGMChargeUpdate(client.sessionId);
+          }
         }
       }
-      const nextInMs = entry.charges >= 3 ? 0 : (5000 - ((now - entry.lastRechargeAt) % 5000));
+      
       if (entry.charges <= 0) {
-        logger.warn(`gmPlaceObstacle rejected - no charges (next in ${nextInMs}ms)`);
-        client.send("gmChargeUpdate", { charges: entry.charges, max: 2, nextInMs });
+        logger.warn(`gmPlaceObstacle rejected - no charges`);
+        this.sendGMChargeUpdate(client.sessionId);
         return;
       }
 
@@ -336,8 +373,7 @@ export class GameRoom extends Room<GameState> {
 
       // Spend charge and notify
       entry.charges = Math.max(0, entry.charges - 1);
-      const nextAfterSpend = entry.charges >= 3 ? 0 : (5000 - ((now - entry.lastRechargeAt) % 5000));
-      client.send("gmChargeUpdate", { charges: entry.charges, max: 3, nextInMs: nextAfterSpend });
+      this.sendGMChargeUpdate(client.sessionId);
     });
   }
 
@@ -439,7 +475,7 @@ export class GameRoom extends Room<GameState> {
 
     let hasActive = false;
     for (const [, player] of this.state.players) {
-      if ((player as any).role === "gm") {
+      if ((player as any).role === "gm" || (player as any).role === "spectator") {
         continue; // spectators don't block start
       }
       hasActive = true;
@@ -471,7 +507,7 @@ export class GameRoom extends Room<GameState> {
     this.resetPigKingHealth(5);
 
     for (const [, player] of this.state.players) {
-      if ((player as any).role === "gm") {
+      if ((player as any).role === "gm" || (player as any).role === "spectator") {
         // Spectators don't participate in physics
         player.alive = true;
         player.velocity = 0;
@@ -541,6 +577,20 @@ export class GameRoom extends Room<GameState> {
     logger.info(
       `Pipe created: id=${pipe.id}, ref=${this.refIdOf(pipe)}, x=${pipe.x}, Ytop=${pipe.Ytop}, Ybottom=${pipe.Ybottom}, gap=${gap}, diff=${this.state.difficulty.toFixed(2)}, total pipes=${this.state.pipes.length}`
     );
+  }
+
+  private killPlayer(player: PlayerState, reason: string) {
+    return;
+    player.alive = false;
+    // Update personal bird high score on death
+    try {
+      const current = Math.max(0, Math.floor(player.score ?? 0));
+      const prevBest = Math.max(0, Math.floor((player as any).birdHighScore ?? 0));
+      if (current > prevBest) {
+        (player as any).birdHighScore = current;
+      }
+    } catch { /* no-op */ }
+    logger.info(`Player ${this.findPlayerId(player) ?? "<unknown>"} died: ${reason}`);
   }
 
   private update(delta: number) {
@@ -613,7 +663,7 @@ export class GameRoom extends Room<GameState> {
 
     const nowMs = Date.now();
     for (const [, player] of this.state.players) {
-      if ((player as any).role === "gm") {
+      if ((player as any).role === "gm" || (player as any).role === "spectator") {
         continue; // spectators not updated
       }
       if (!player.alive) {
@@ -636,15 +686,7 @@ export class GameRoom extends Room<GameState> {
         logger.warn(`Player hit floor at y=${player.y}, floorY=${floorY}`);
         player.y = floorY - this.birdHalfHeight;
         if (!shieldActiveThisTick) {
-          player.alive = false;
-          // Update personal bird high score on death
-          try {
-            const current = Math.max(0, Math.floor(player.score ?? 0));
-            const prevBest = Math.max(0, Math.floor((player as any).birdHighScore ?? 0));
-            if (current > prevBest) {
-              (player as any).birdHighScore = current;
-            }
-          } catch { /* no-op */ }
+          this.killPlayer(player, "floor collision");
           continue;
         } else {
           // Start 1s grace timer if not already expiring
@@ -673,15 +715,7 @@ export class GameRoom extends Room<GameState> {
           if (birdTop < gapTop || birdBottom > gapBottom) {
             logger.warn(`Player hit pipe at x=${pipe.x}, player y=${player.y}, Ytop=${pipe.Ytop}, Ybottom=${pipe.Ybottom}${shieldActiveThisTick ? " [shielded]" : ""}`);
             if (!shieldActiveThisTick) {
-              player.alive = false;
-              // Update personal bird high score on death
-              try {
-                const current = Math.max(0, Math.floor(player.score ?? 0));
-                const prevBest = Math.max(0, Math.floor((player as any).birdHighScore ?? 0));
-                if (current > prevBest) {
-                  (player as any).birdHighScore = current;
-                }
-              } catch { /* no-op */ }
+              this.killPlayer(player, `pipe collision (id=${pipe.id})`);
               break;
             } else {
               // Start 1s grace timer if not already expiring
@@ -718,15 +752,7 @@ export class GameRoom extends Room<GameState> {
         if (birdRight > obsLeft && birdLeft < obsRight && birdBottom > obsTop && birdTop < obsBottom) {
           logger.warn(`Player hit placed obstacle id=${obs.id} kind=${obs.kind} at x=${obs.x}, y=${obs.y}${shieldActiveThisTick ? " [shielded]" : ""}`);
           if (!shieldActiveThisTick) {
-            player.alive = false;
-            // Update personal bird high score on death
-            try {
-              const current = Math.max(0, Math.floor(player.score ?? 0));
-              const prevBest = Math.max(0, Math.floor((player as any).birdHighScore ?? 0));
-              if (current > prevBest) {
-                (player as any).birdHighScore = current;
-              }
-            } catch { /* no-op */ }
+            this.killPlayer(player, `placed obstacle collision (id=${obs.id}, kind=${obs.kind})`);
             break;
           } else {
             // Start 1s grace timer if not already expiring
@@ -816,8 +842,8 @@ export class GameRoom extends Room<GameState> {
       });
     }
 
-    const alivePlayers = Array.from(this.state.players.values()).filter((player: any) => player.alive && player.role !== "gm");
-    const activeParticipants = Array.from(this.state.players.values()).filter((player: any) => player.role !== "gm").length;
+    const alivePlayers = Array.from(this.state.players.values()).filter((player: any) => player.alive && player.role === "bird");
+    const activeParticipants = Array.from(this.state.players.values()).filter((player: any) => player.role === "bird").length;
     //logger.debug(`Update: ${alivePlayers.length} alive players out of ${this.state.players.size} total`);
 
     if (alivePlayers.length === 0) {
@@ -899,7 +925,7 @@ export class GameRoom extends Room<GameState> {
       try {
         for (const [, p] of this.state.players) {
           const role = (p as any).role;
-          if (role === "gm") continue;
+          if (role === "gm" || role === "spectator") continue;
           const current = Math.max(0, Math.floor(p.score ?? 0));
           const prevBest = Math.max(0, Math.floor((p as any).birdHighScore ?? 0));
           if (current > prevBest) {
