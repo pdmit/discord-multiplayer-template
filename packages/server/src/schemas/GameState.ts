@@ -28,6 +28,29 @@ export class PlayerState extends Schema {
 
   @type("boolean")
   ready = false;
+
+  // Personal bests
+  @type("number")
+  birdHighScore = 0; // most pipes passed as a bird
+
+  @type("number")
+  pigBestTime = 0; // best (lowest) win time in seconds as GM; 0 means none yet
+
+  // Temporary shield power-up state
+  @type("boolean")
+  shield = false;
+
+  // Epoch timestamp (ms) when shield expires; 0 if inactive
+  @type("number")
+  shieldUntil = 0;
+
+  // When true, shield is in 1s grace flashing state before removal
+  @type("boolean")
+  shieldExpiring = false;
+
+  // Epoch timestamp (ms) when grace ends and shield is removed
+  @type("number")
+  shieldGraceUntil = 0;
 }
 
 export class PipeState extends Schema {
@@ -127,4 +150,11 @@ export class GameState extends Schema {
   // Global Game Master (Pig King) health shared with all clients
   @type(PigKingState)
   pigKing: PigKingState = new PigKingState();
+
+  // Team win counters (persist across rounds for room lifetime)
+  @type("number")
+  birdWins: number = 0; // times birds (players) defeated Pig King
+
+  @type("number")
+  pigWins: number = 0; // times Pig King (GM) won by eliminating birds
 }

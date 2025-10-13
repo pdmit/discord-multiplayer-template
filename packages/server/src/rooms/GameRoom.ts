@@ -29,7 +29,10 @@ export class GameRoom extends Room<GameState> {
   private flapVelocity = -250;
   private readonly basePipeSpeed = 220;
   private pipeSpeed = this.basePipeSpeed;
-  private pipeInterval = 1000; // How often pipes are spawned (ms)
+  // Pipe spawn intervals (ms)
+  private readonly pvePipeIntervalMs = 1000; // PvE (no GM)
+  private readonly pvpPipeIntervalMs = 3000; // PvP (GM present)
+  private pipeInterval = this.pvePipeIntervalMs; // active interval
   private floorHeight = 112;
   private birdX = 260;
   private birdHalfWidth = 17;
@@ -53,8 +56,9 @@ export class GameRoom extends Room<GameState> {
   private readonly stageSpeedIncrement = 0.2; // +20% pipe speed per stage
   private readonly powerUpIntervalSec = 3; // fallback interval if def not sampled
   private powerUpDefs: PowerUpDef[] = [
-    new PowerUpDef("star", "Star", "star", 5),
-    new PowerUpDef("hammer", "Hammer", "hammer", 5),
+    new PowerUpDef("coin", "+2 Points!", "coin", 5),
+    new PowerUpDef("hammer", "Hammer Time!", "hammer", 5),
+    new PowerUpDef("star", "Shield!", "star", 5),
   ];
   private currentPowerUpIntervalSec = this.powerUpIntervalSec;
 
@@ -477,11 +481,16 @@ export class GameRoom extends Room<GameState> {
       player.velocity = -300; // Give initial upward velocity to prevent immediate death
       player.score = 0;
       player.lastPassedPipeId = 0;
+      // Clear any lingering power-ups
+      (player as any).shield = false;
+      (player as any).shieldUntil = 0;
+      (player as any).shieldExpiring = false;
+      (player as any).shieldGraceUntil = 0;
       logger.info(`Player initialized: y=${player.y}, velocity=${player.velocity}, alive=${player.alive}, worldHeight=${this.worldHeight}`);
     }
 
     const initialSpacing = 280;
-    for (let i = 0; i < 3; i += 1) {
+    for (let i = 0; i < 1; i += 1) {
       this.spawnPipePair(this.worldWidth + 200 + i * initialSpacing);
     }
     // Reset power-up spawn timer
@@ -547,11 +556,16 @@ export class GameRoom extends Room<GameState> {
       this.applyStage(stageForDifficulty);
     }
 
-    this.elapsedSincePipe += delta * 1000;
-    if (this.elapsedSincePipe >= this.pipeInterval) {
-      this.elapsedSincePipe = 0;
-      this.spawnPipePair();
+    // Adjust pipe spawn rate based on GM presence
+    const hasGM = this.hasGameMaster();
+    const desiredInterval = hasGM ? this.pvpPipeIntervalMs : this.pvePipeIntervalMs;
+    if (desiredInterval !== this.pipeInterval) {
+      this.pipeInterval = desiredInterval;
+      logger.info(`Pipe interval set to ${this.pipeInterval}ms (${hasGM ? "PvP (GM present)" : "PvE"})`);
     }
+
+    // Accumulate spawn timer in milliseconds (delta is seconds)
+    this.elapsedSincePipe += delta * 1000;
 
     // Spawn power-ups at fixed interval (in seconds) while running
     this.powerUpElapsed += delta;
@@ -564,9 +578,18 @@ export class GameRoom extends Room<GameState> {
 
     // Important: remove expired pipes BEFORE mutating remaining ones
     // (avoids sending property patches on a pipe in the same tick it is deleted)
-    while (this.state.pipes.length > 0 && this.state.pipes[0].x < -this.pipeWidth) {
-      const removed = this.state.pipes.shift();
-      logger.info(`Pipe removed (pre-move): id=${removed?.id}, ref=${this.refIdOf(removed)}`);
+    //while (this.state.pipes.length > 0 && this.state.pipes[0].x < -this.pipeWidth) {
+    //const removed = this.state.pipes.shift();
+    //logger.info(`Pipe removed (pre-move): id=${removed?.id}, ref=${this.refIdOf(removed)}`);
+    //}
+
+    // Remove placed pipes that left the screen (unordered removals supported)
+    for (let i = this.state.pipes.length - 1; i >= 0; i -= 1) {
+      const obs = this.state.pipes[i];
+      if (obs.x < -this.pipeWidth) {
+        const removed = this.state.pipes.splice(i, 1)[0];
+        logger.info(`Pipe removed (pre-move): id=${removed?.id}`);
+      }
     }
 
     // Remove placed obstacles that left the screen (unordered removals supported)
@@ -587,6 +610,7 @@ export class GameRoom extends Room<GameState> {
       }
     }
 
+    const nowMs = Date.now();
     for (const [, player] of this.state.players) {
       if ((player as any).role === "gm") {
         continue; // spectators not updated
@@ -594,6 +618,11 @@ export class GameRoom extends Room<GameState> {
       if (!player.alive) {
         continue;
       }
+
+      // Snapshot shield state at start of tick (base duration or grace timer)
+      const baseShieldActive = ((player as any).shield === true) && (Number((player as any).shieldUntil || 0) > nowMs);
+      const graceShieldActive = ((player as any).shieldExpiring === true) && (Number((player as any).shieldGraceUntil || 0) > nowMs);
+      let shieldActiveThisTick = baseShieldActive || graceShieldActive;
 
       player.velocity += this.gravity * delta;
       player.y += player.velocity * delta;
@@ -605,8 +634,27 @@ export class GameRoom extends Room<GameState> {
       if (player.y + this.birdHalfHeight >= floorY) {
         logger.warn(`Player hit floor at y=${player.y}, floorY=${floorY}`);
         player.y = floorY - this.birdHalfHeight;
-        player.alive = false;
-        continue;
+        if (!shieldActiveThisTick) {
+          player.alive = false;
+          // Update personal bird high score on death
+          try {
+            const current = Math.max(0, Math.floor(player.score ?? 0));
+            const prevBest = Math.max(0, Math.floor((player as any).birdHighScore ?? 0));
+            if (current > prevBest) {
+              (player as any).birdHighScore = current;
+            }
+          } catch { /* no-op */ }
+          continue;
+        } else {
+          // Start 1s grace timer if not already expiring
+          if (!(player as any).shieldExpiring) {
+            (player as any).shieldExpiring = true;
+            (player as any).shieldGraceUntil = nowMs + 1000;
+            logger.info(`Shield entering grace (floor) for player ${this.findPlayerId(player) ?? "<unknown>"}`);
+          }
+          // Keep invulnerable for rest of this tick
+          shieldActiveThisTick = true;
+        }
       }
 
       for (const pipe of this.state.pipes) {
@@ -622,9 +670,29 @@ export class GameRoom extends Room<GameState> {
 
         if (birdRight > pipeLeft && birdLeft < pipeRight) {
           if (birdTop < gapTop || birdBottom > gapBottom) {
-            logger.warn(`Player hit pipe at x=${pipe.x}, player y=${player.y}, Ytop=${pipe.Ytop}, Ybottom=${pipe.Ybottom}`);
-            player.alive = false;
-            break;
+            logger.warn(`Player hit pipe at x=${pipe.x}, player y=${player.y}, Ytop=${pipe.Ytop}, Ybottom=${pipe.Ybottom}${shieldActiveThisTick ? " [shielded]" : ""}`);
+            if (!shieldActiveThisTick) {
+              player.alive = false;
+              // Update personal bird high score on death
+              try {
+                const current = Math.max(0, Math.floor(player.score ?? 0));
+                const prevBest = Math.max(0, Math.floor((player as any).birdHighScore ?? 0));
+                if (current > prevBest) {
+                  (player as any).birdHighScore = current;
+                }
+              } catch { /* no-op */ }
+              break;
+            } else {
+              // Start 1s grace timer if not already expiring
+              if (!(player as any).shieldExpiring) {
+                (player as any).shieldExpiring = true;
+                (player as any).shieldGraceUntil = nowMs + 1000;
+                logger.info(`Shield entering grace (pipe) for player ${this.findPlayerId(player) ?? "<unknown>"}`);
+              }
+              // Remain invulnerable for rest of this tick only
+              shieldActiveThisTick = true;
+              // Do not break; allow continued update
+            }
           }
         }
 
@@ -647,9 +715,29 @@ export class GameRoom extends Room<GameState> {
         const birdBottom = player.y + this.birdHalfHeight;
 
         if (birdRight > obsLeft && birdLeft < obsRight && birdBottom > obsTop && birdTop < obsBottom) {
-          logger.warn(`Player hit placed obstacle id=${obs.id} kind=${obs.kind} at x=${obs.x}, y=${obs.y}`);
-          player.alive = false;
-          break;
+          logger.warn(`Player hit placed obstacle id=${obs.id} kind=${obs.kind} at x=${obs.x}, y=${obs.y}${shieldActiveThisTick ? " [shielded]" : ""}`);
+          if (!shieldActiveThisTick) {
+            player.alive = false;
+            // Update personal bird high score on death
+            try {
+              const current = Math.max(0, Math.floor(player.score ?? 0));
+              const prevBest = Math.max(0, Math.floor((player as any).birdHighScore ?? 0));
+              if (current > prevBest) {
+                (player as any).birdHighScore = current;
+              }
+            } catch { /* no-op */ }
+            break;
+          } else {
+            // Start 1s grace timer if not already expiring
+            if (!(player as any).shieldExpiring) {
+              (player as any).shieldExpiring = true;
+              (player as any).shieldGraceUntil = nowMs + 1000;
+              logger.info(`Shield entering grace (obstacle) for player ${this.findPlayerId(player) ?? "<unknown>"}`);
+            }
+            // Remain invulnerable for rest of this tick only
+            shieldActiveThisTick = true;
+            // Do not break; allow continued update
+          }
         }
       }
 
@@ -671,6 +759,26 @@ export class GameRoom extends Room<GameState> {
           break; // one power-up per player per tick
         }
       }
+
+      // Handle natural expiry -> enter grace if not already
+      if ((player as any).shield === true && Number((player as any).shieldUntil || 0) > 0 && nowMs >= Number((player as any).shieldUntil)) {
+        if (!(player as any).shieldExpiring) {
+          (player as any).shieldExpiring = true;
+          (player as any).shieldGraceUntil = nowMs + 1000;
+          const pid = this.findPlayerId(player);
+          logger.info(`Shield entering grace (natural expiry) for player ${pid ?? "<unknown>"}`);
+        }
+      }
+
+      // Finalize grace expiry -> remove shield fully
+      if ((player as any).shieldExpiring === true && Number((player as any).shieldGraceUntil || 0) > 0 && nowMs >= Number((player as any).shieldGraceUntil)) {
+        (player as any).shield = false;
+        (player as any).shieldUntil = 0;
+        (player as any).shieldExpiring = false;
+        (player as any).shieldGraceUntil = 0;
+        const pid = this.findPlayerId(player);
+        logger.info(`Shield expired (grace complete) for player ${pid ?? "<unknown>"}`);
+      }
     }
 
     for (const pipe of this.state.pipes) {
@@ -681,11 +789,17 @@ export class GameRoom extends Room<GameState> {
       obs.x -= this.pipeSpeed * delta;
     }
 
-    // Move power-ups with the world and remove off-screen
+    // Move power-ups with the world
     for (let i = this.state.powerUps.length - 1; i >= 0; i -= 1) {
       const pu = this.state.powerUps[i];
-      //pu.x -= this.pipeSpeed * delta;
       pu.x = pu.x - (this.pipeSpeed * delta);
+    }
+
+    // Spawn new pipes AFTER removals and movements to avoid
+    // delete+patch ordering issues on the same tick.
+    if (this.elapsedSincePipe >= this.pipeInterval) {
+      this.elapsedSincePipe = 0;
+      this.spawnPipePair();
     }
 
     // Periodic debug summary for placed obstacles movement
@@ -711,6 +825,22 @@ export class GameRoom extends Room<GameState> {
       this.state.running = false;
       // Prefer GM sessionId; fallback to special token
       this.state.winnerId = this.state.gameMasterId || "__PIG__";
+      // Increment team win counter
+      try { this.state.pigWins = Math.max(0, Math.floor((this.state.pigWins ?? 0))) + 1; } catch { }
+      // Update GM personal best time (lower is better) when a GM exists
+      try {
+        const gmId = this.state.gameMasterId;
+        if (gmId) {
+          const gm = this.state.players.get(gmId);
+          if (gm) {
+            const t = Number(this.state.difficulty ?? 0);
+            const prev = Number((gm as any).pigBestTime ?? 0);
+            if (prev <= 0 || (Number.isFinite(t) && t > 0 && t < prev)) {
+              (gm as any).pigBestTime = t;
+            }
+          }
+        }
+      } catch { /* no-op */ }
       this.applyStage(0);
       // Defer clearing to next tick to avoid delete+patch ordering issues
       this.deferClearLevel();
@@ -762,6 +892,20 @@ export class GameRoom extends Room<GameState> {
       logger.info("Round over - Birds defeated Pig King");
       this.state.running = false;
       this.state.winnerId = "__BIRDS__";
+      // Increment team win counter
+      try { this.state.birdWins = Math.max(0, Math.floor((this.state.birdWins ?? 0))) + 1; } catch { }
+      // Update bird personal bests for all participants based on their final score
+      try {
+        for (const [, p] of this.state.players) {
+          const role = (p as any).role;
+          if (role === "gm") continue;
+          const current = Math.max(0, Math.floor(p.score ?? 0));
+          const prevBest = Math.max(0, Math.floor((p as any).birdHighScore ?? 0));
+          if (current > prevBest) {
+            (p as any).birdHighScore = current;
+          }
+        }
+      } catch { /* no-op */ }
       this.applyStage(0);
       this.deferClearLevel();
       this.setAllPlayersReady(false);
@@ -895,13 +1039,23 @@ export class GameRoom extends Room<GameState> {
 
   private applyPowerUpEffect(player: PlayerState, pu: PowerUpState) {
     switch (pu.type) {
-      case "star":
+      case "coin":
         // Award points; treat as passing two pipes
         player.score += 2;
         break;
       case "hammer":
         // Deal damage to Pig King
         this.damagePigKing(1);
+        break;
+      case "star":
+        // Temporary invulnerability (shield) for 10 seconds
+        try {
+          const now = Date.now();
+          (player as any).shield = true;
+          (player as any).shieldUntil = now + 10_000; // 10s
+          const pid = this.findPlayerId(player);
+          logger.info(`Shield granted to player ${pid ?? "<unknown>"} until ${new Date((player as any).shieldUntil).toISOString()}`);
+        } catch { /* no-op */ }
         break;
       default:
         // No-op placeholder

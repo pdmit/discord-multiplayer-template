@@ -7,6 +7,10 @@ export class MainMenu extends Scene {
   }
 
   create() {
+    // Register lifecycle cleanup hooks to ensure UI and listeners are released
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.onShutdown, this);
+    this.events.once(Phaser.Scenes.Events.DESTROY, this.onDestroy, this);
+
     const { width, height } = this.cameras.main;
 
     this.add.tileSprite(0, 0, width * 1.5, height, "background-day").setOrigin(0, 0);
@@ -72,5 +76,28 @@ export class MainMenu extends Scene {
       await authorizeDiscordUser();
       this.scene.start("Game", { role: "bird" });
     });
+  }
+
+  // Scene lifecycle hooks
+  private onShutdown() {
+    this.cleanupMenuScene();
+  }
+
+  private onDestroy() {
+    this.cleanupMenuScene();
+    try { this.events.removeAllListeners(); } catch { /* noop */ }
+  }
+
+  private cleanupMenuScene() {
+    // Stop input listeners
+    try { this.input.removeAllListeners(); } catch { /* noop */ }
+    try { this.input.keyboard?.removeAllListeners(); } catch { /* noop */ }
+    // Kill tweens and timers in this scene
+    try { this.tweens.killAll(); } catch { /* noop */ }
+    try { this.time.removeAllEvents(); } catch { /* noop */ }
+    // Stop any playing sounds from this scene
+    try { this.sound.stopAll(); } catch { /* noop */ }
+    // Destroy all display objects defensively
+    try { this.children.removeAll(true); } catch { /* noop */ }
   }
 }

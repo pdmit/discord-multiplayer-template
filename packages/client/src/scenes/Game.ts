@@ -8,10 +8,16 @@ type PlayerState = {
   y: number;
   velocity: number;
   alive: boolean;
+  shield?: boolean;
+  shieldUntil?: number;
+  shieldExpiring?: boolean;
+  shieldGraceUntil?: number;
   score: number;
   lastPassedPipeId: number;
   ready: boolean;
   role?: "bird" | "gm"; // optional for backward compat
+  birdHighScore?: number; // personal best as bird (pipes)
+  pigBestTime?: number;   // personal best as GM (seconds, lower is better)
 };
 
 type PipeState = {
@@ -55,6 +61,7 @@ export class Game extends Scene {
   private background!: Phaser.GameObjects.TileSprite;
   private ground!: Phaser.GameObjects.TileSprite;
   private playerSprites = new Map<string, Phaser.GameObjects.Sprite>();
+  private shieldAuras = new Map<string, Phaser.GameObjects.Ellipse>();
   private pipeSprites = new Map<
     number,
     {
@@ -73,11 +80,24 @@ export class Game extends Scene {
   private scoreText!: Phaser.GameObjects.Text;
   private scoreBackdrop!: Phaser.GameObjects.Rectangle;
   private statusText!: Phaser.GameObjects.Text;
+  private scorePulseTween?: Phaser.Tweens.Tween;
   private readyCountText!: Phaser.GameObjects.Text;
   private readyButtonBackground?: Phaser.GameObjects.Rectangle;
   private readyButtonLabel?: Phaser.GameObjects.Text;
   private gameOverScreen?: Phaser.GameObjects.Container;
   private gameOverText?: Phaser.GameObjects.Text;
+  private gameOverScoreText?: Phaser.GameObjects.Text;
+  private gameOverHighText?: Phaser.GameObjects.Text;
+  private gameOverTeamsText?: Phaser.GameObjects.Text;
+  private gameOverPanel?: Phaser.GameObjects.Container;
+  private gameOverPanelBg?: Phaser.GameObjects.Graphics;
+  private gameOverPanelShadow?: Phaser.GameObjects.Graphics;
+  private gameOverShowTween?: Phaser.Tweens.Tween;
+  private gameOverFadeTween?: Phaser.Tweens.Tween;
+  // Tweens/timer used to animate the status text at round start
+  private statusIntroTween?: Phaser.Tweens.Tween;
+  private statusIntroHold?: Phaser.Time.TimerEvent;
+  private isStatusIntroActive: boolean = false;
   private restartButton?: Phaser.GameObjects.Rectangle;
   private restartButtonLabel?: Phaser.GameObjects.Text;
   private returnButton?: Phaser.GameObjects.Rectangle;
@@ -141,6 +161,10 @@ export class Game extends Scene {
   private readonly pigBarWidth: number = 200;
   private readonly pigBarHeight: number = 18;
   private readonly pigAvatarSize: number = 40;
+  // Delay UI health update to sync with thrown-hammer arrival
+  private pigImpactHoldUntil: number = 0; // game clock ms when UI can apply next health change
+  private pigPendingUI?: { health: number; max: number };
+  private pigUIApplyTimer?: Phaser.Time.TimerEvent;
 
   // Win banner
   private winBanner?: Phaser.GameObjects.Container;
@@ -179,6 +203,10 @@ export class Game extends Scene {
     this.setupWorld();
     this.setupUI();
     this.setupInput();
+
+    // Register lifecycle cleanup hooks to ensure UI and listeners are released
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.onShutdown, this);
+    this.events.once(Phaser.Scenes.Events.DESTROY, this.onDestroy, this);
 
     await this.connect();
     this.room?.onStateChange.once(() => {
@@ -232,7 +260,7 @@ export class Game extends Scene {
     this.powerUpSprites.forEach((entry) => {
       entry.img.x = Phaser.Math.Linear(entry.img.x, entry.targetX, interpolationAlpha);
       entry.img.y = Phaser.Math.Linear(entry.img.y, entry.targetY, interpolationAlpha);
-      console.log("Power-up sprite position:", entry.img.x, entry.img.y);
+      //console.log("Power-up sprite position:", entry.img.x, entry.img.y);
     });
     // Update GM gap guide lines (center +/- gap/2)
     this.updateGmGapGuides();
@@ -248,10 +276,27 @@ export class Game extends Scene {
       // Check if running state changed
       const currentRunning = this.room.state.running as boolean;
       if (currentRunning !== this.lastKnownRunning) {
-        console.log("Running state changed from", this.lastKnownRunning, "to", currentRunning);
+        const prevRunning = this.lastKnownRunning;
+        console.log("Running state changed from", prevRunning, "to", currentRunning);
         this.lastKnownRunning = currentRunning;
         needsUIUpdate = true;
+        if (currentRunning && !prevRunning) {
+          this.playRoundStartStatusAnimation();
+        }
         this.updateStatusMessage();
+        // Hide skin selection immediately on game start
+        if (currentRunning) {
+          this.setSkinSelectionVisible(false);
+          // Hard-destroy the panel to prevent any stray visibility or input
+          try { this.skinSelectionContainer?.destroy(true); } catch { /* noop */ }
+          this.skinSelectionContainer = undefined;
+          this.skinSlotElements.clear();
+        }
+
+        // When game starts, ensure lobby skin selection is hidden immediately
+        if (currentRunning) {
+          this.setSkinSelectionVisible(false);
+        }
 
         // When game starts, check for existing pipes
         if (currentRunning && this.room.state.pipes) {
@@ -309,10 +354,65 @@ export class Game extends Scene {
 
       // Force UI update if any state changed
       if (needsUIUpdate) {
+        console.log("needsUIUpdate is true");
         this.updateReadyUI();
       }
 
     }
+  }
+
+  /**
+   * Plays a short intro animation for the statusText at the start of a round,
+   * then fades it out and keeps it hidden while the round is running.
+   */
+  private playRoundStartStatusAnimation() {
+    if (!this.statusText) return;
+
+    // Kill any previous animation to avoid overlap
+    try { this.statusIntroTween?.stop(); } catch { /* noop */ }
+    this.statusIntroTween = undefined;
+    if (this.statusIntroHold) {
+      try { this.statusIntroHold.remove(false); } catch { /* noop */ }
+      this.statusIntroHold = undefined;
+    }
+
+    // Ensure visible and at a base state before animating
+    this.statusText.setVisible(true);
+    this.statusText.setAlpha(1);
+    this.statusText.setScale(1);
+    this.isStatusIntroActive = true;
+
+    // Use whatever text is currently there (e.g., "Starting the round...")
+    // and give it a quick pop + fade out using chained tweens.
+    this.statusIntroTween = this.tweens.add({
+      targets: this.statusText,
+      scale: 1.15,
+      duration: 220,
+      ease: "Back.Out",
+      onComplete: () => {
+        this.statusIntroTween = this.tweens.add({
+          targets: this.statusText,
+          scale: 1.0,
+          duration: 140,
+          ease: "Sine.Out",
+          onComplete: () => {
+            // Hold for 600ms before fading out
+            this.statusIntroHold = this.time.delayedCall(1200, () => {
+              this.statusIntroTween = this.tweens.add({
+                targets: this.statusText,
+                alpha: 0,
+                duration: 380,
+                ease: "Quad.In",
+                onComplete: () => {
+                  try { this.statusText.setVisible(false); } catch { /* noop */ }
+                  this.isStatusIntroActive = false;
+                },
+              });
+            });
+          },
+        });
+      },
+    });
   }
 
   private setupWorld() {
@@ -643,6 +743,28 @@ export class Game extends Scene {
     if (!this.room || !this.room.state) {
       return;
     }
+    // Never show or rebuild selection UI for GM; keep options cached only
+    if (this.localPlayerIsGM === true) {
+      const stateOptionsGM = (this.room.state as any).skinOptions as Array<string> | undefined;
+      if (stateOptionsGM) {
+        this.skinOptions = Array.from(stateOptionsGM);
+      }
+      try { this.skinSelectionContainer?.destroy(true); } catch { /* noop */ }
+      this.skinSelectionContainer = undefined;
+      this.skinSlotElements.clear();
+      this.setSkinSelectionVisible(false);
+      return;
+    }
+    // Do not rebuild selection UI while a round is running; we will rebuild as we re-enter lobby
+    if ((this.room.state as any)?.running) {
+      // Keep options list up to date silently
+      const stateOptions = (this.room.state as any).skinOptions as Array<string> | undefined;
+      if (stateOptions) {
+        const nextOptions = Array.from(stateOptions);
+        this.skinOptions = nextOptions;
+      }
+      return;
+    }
 
     const stateOptions = (this.room.state as any).skinOptions as Array<string> | undefined;
     if (!stateOptions) {
@@ -674,6 +796,11 @@ export class Game extends Scene {
   }
 
   private rebuildSkinSelection() {
+    // Do not build the selection UI for GM
+    if (this.localPlayerIsGM === true) {
+      this.setSkinSelectionVisible(false);
+      return;
+    }
     this.skinSelectionContainer?.destroy(true);
     this.skinSelectionContainer = undefined;
     this.skinSlotElements.clear();
@@ -786,19 +913,23 @@ export class Game extends Scene {
     });
 
     this.skinSelectionContainer = container;
-    const canShow = !this.room?.state?.running && this.getPlayerCount() > 0;
+    // Keep logic consistent with lobby UI: never show during a running round or for GM
+    const canShow = !this.room?.state?.running && this.getPlayerCount() > 0 && !this.localPlayerIsGM;
     this.setSkinSelectionVisible(canShow);
   }
 
   private setSkinSelectionVisible(visible: boolean) {
     if (!this.scene || !this.scene.sys) {
-      console.warn("Scene is not initialized or has been destroyed.");
+      console.warn("setSkinSelectionVisible() Scene is not initialized or has been destroyed.");
       return;
     }
     if (!this.skinSelectionContainer) {
       return;
     }
-
+    // Force-hide for GM or while running
+    if (this.localPlayerIsGM === true || (this.room?.state as any)?.running) {
+      visible = false;
+    }
     this.skinSelectionContainer.setVisible(visible);
     this.skinSlotElements.forEach((elements) => {
       if (visible) {
@@ -930,8 +1061,14 @@ export class Game extends Scene {
     overlay.on("pointerdown", (pointer) => {      // do nothing — this just blocks input below
     });
 
+    // Inner panel to avoid overlap and keep consistent spacing
+    this.gameOverPanel = this.add.container(0, 0);
+    this.gameOverScreen.add(this.gameOverPanel);
+    // start slightly scaled; will animate to 1.0 when showing
+    this.gameOverPanel.setScale(1);
+
     // Game over text
-    this.gameOverText = this.add.text(0, -50, "GAME OVER", {
+    this.gameOverText = this.add.text(0, -100, "GAME OVER", {
       fontFamily: "Arial Black",
       fontSize: 48,
       color: "#ff0000",
@@ -940,24 +1077,43 @@ export class Game extends Scene {
       align: "center",
     });
     this.gameOverText.setOrigin(0.5);
-    this.gameOverScreen.add(this.gameOverText);
+    this.gameOverPanel.add(this.gameOverText);
 
-    // Score display
-    const scoreDisplay = this.add.text(0, 0, "Score: 0", {
+    // Score and summary displays
+    this.gameOverScoreText = this.add.text(0, -40, "Score: 0", {
       fontFamily: "Arial",
-      fontSize: 32,
+      fontSize: 30,
       color: "#ffffff",
       stroke: "#000000",
       strokeThickness: 6,
       align: "center",
-    });
-    scoreDisplay.setOrigin(0.5);
-    this.gameOverScreen.add(scoreDisplay);
+    }).setOrigin(0.5);
+    this.gameOverPanel.add(this.gameOverScoreText);
+
+    this.gameOverHighText = this.add.text(0, -4, "High: 0", {
+      fontFamily: "Arial",
+      fontSize: 24,
+      color: "#ffffcc",
+      stroke: "#000000",
+      strokeThickness: 5,
+      align: "center",
+    }).setOrigin(0.5);
+    this.gameOverPanel.add(this.gameOverHighText);
+
+    this.gameOverTeamsText = this.add.text(0, 28, "Bird wins: 0 | Pig wins: 0", {
+      fontFamily: "Arial",
+      fontSize: 22,
+      color: "#cfe9ff",
+      stroke: "#000000",
+      strokeThickness: 4,
+      align: "center",
+    }).setOrigin(0.5);
+    this.gameOverPanel.add(this.gameOverTeamsText);
 
     // Restart button
     const buttonWidth = 240;
     const buttonHeight = 60;
-    const playAgainY = 80;
+    const playAgainY = 100;
 
     this.restartButton = this.add.rectangle(0, playAgainY, buttonWidth, buttonHeight, 0x27ae60, 0.9);
     this.restartButton.setOrigin(0.5);
@@ -969,7 +1125,7 @@ export class Game extends Scene {
     this.restartButton.on("pointerout", () => {
       this.restartButton?.setFillStyle(0x27ae60, 0.9);
     });
-    this.gameOverScreen.add(this.restartButton);
+    this.gameOverPanel.add(this.restartButton);
 
     this.restartButtonLabel = this.add.text(0, playAgainY, "Play Again", {
       fontFamily: "Arial Black",
@@ -980,7 +1136,7 @@ export class Game extends Scene {
       align: "center",
     });
     this.restartButtonLabel.setOrigin(0.5);
-    this.gameOverScreen.add(this.restartButtonLabel);
+    this.gameOverPanel.add(this.restartButtonLabel);
 
     // Return to Menu button
     const returnY = playAgainY + 75;
@@ -994,7 +1150,7 @@ export class Game extends Scene {
     this.returnButton.on("pointerout", () => {
       this.returnButton?.setFillStyle(0x8e44ad, 0.9);
     });
-    this.gameOverScreen.add(this.returnButton);
+    this.gameOverPanel.add(this.returnButton);
 
     this.returnButtonLabel = this.add.text(0, returnY, "Return to Menu", {
       fontFamily: "Arial Black",
@@ -1005,7 +1161,85 @@ export class Game extends Scene {
       align: "center",
     });
     this.returnButtonLabel.setOrigin(0.5);
-    this.gameOverScreen.add(this.returnButtonLabel);
+    this.gameOverPanel.add(this.returnButtonLabel);
+
+    // Draw panel background behind content to avoid overlap and improve readability
+    this.updateGameOverPanelBackground();
+  }
+
+  private updateGameOverPanelBackground() {
+    if (!this.gameOverPanel) return;
+
+    const exclude = new Set<any>();
+    if (this.gameOverPanelBg) exclude.add(this.gameOverPanelBg);
+    if (this.gameOverPanelShadow) exclude.add(this.gameOverPanelShadow);
+
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+
+    // Compute bounds from children in panel-local coordinates
+    this.gameOverPanel.iterate((child: any) => {
+      if (!child || exclude.has(child)) return;
+      // Prefer displayWidth/displayHeight for scale-aware size
+      const w = Number.isFinite(child.displayWidth) ? child.displayWidth : (Number(child.width) || 0);
+      const h = Number.isFinite(child.displayHeight) ? child.displayHeight : (Number(child.height) || 0);
+      const ox = (typeof child.originX === "number") ? child.originX : 0.5;
+      const oy = (typeof child.originY === "number") ? child.originY : 0.5;
+      const left = Number(child.x) - w * ox;
+      const right = Number(child.x) + w * (1 - ox);
+      const top = Number(child.y) - h * oy;
+      const bottom = Number(child.y) + h * (1 - oy);
+      minX = Math.min(minX, left);
+      minY = Math.min(minY, top);
+      maxX = Math.max(maxX, right);
+      maxY = Math.max(maxY, bottom);
+    });
+
+    if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+      // Fallback default panel size if content not ready yet
+      minX = -260; maxX = 260; minY = -130; maxY = 190;
+    }
+
+    const contentW = Math.max(0, maxX - minX);
+    const contentH = Math.max(0, maxY - minY);
+    const padX = 30;
+    const padY = 24;
+    const width = Math.max(360, contentW + padX * 2);
+    const height = Math.max(220, contentH + padY * 2);
+    const cx = (minX + maxX) / 2; // panel-local center
+    const cy = (minY + maxY) / 2;
+
+    // Create graphics if missing and add behind all children
+    if (!this.gameOverPanelShadow) {
+      this.gameOverPanelShadow = this.add.graphics();
+      this.gameOverPanel.addAt(this.gameOverPanelShadow, 0);
+    }
+    if (!this.gameOverPanelBg) {
+      this.gameOverPanelBg = this.add.graphics();
+      this.gameOverPanel.addAt(this.gameOverPanelBg, 1);
+    }
+
+    // Position backgrounds at the content center
+    this.gameOverPanelShadow.setPosition(cx + 6, cy + 8);
+    this.gameOverPanelBg.setPosition(cx, cy);
+
+    const radius = 16;
+    // Redraw shadow
+    this.gameOverPanelShadow.clear();
+    this.gameOverPanelShadow.fillStyle(0x000000, 0.35);
+    // @ts-ignore Phaser API
+    (this.gameOverPanelShadow as any).fillRoundedRect(-width / 2, -height / 2, width, height, radius);
+
+    // Redraw panel
+    this.gameOverPanelBg.clear();
+    this.gameOverPanelBg.fillStyle(0x000000, 0.6);
+    this.gameOverPanelBg.lineStyle(2, 0xffffff, 0.35);
+    // @ts-ignore Phaser API
+    (this.gameOverPanelBg as any).fillRoundedRect(-width / 2, -height / 2, width, height, radius);
+    // @ts-ignore Phaser API
+    (this.gameOverPanelBg as any).strokeRoundedRect(-width / 2, -height / 2, width, height, radius);
   }
 
   private setupInput() {
@@ -1054,30 +1288,80 @@ export class Game extends Scene {
       return;
     }
 
-    console.log("handleFlap() called");
+    //console.log("handleFlap() called");
     this.room.send("flap");
     this.sound.play("wing", { volume: 0.4 });
   }
 
-  private showGameOverScreen(won: boolean, score: number) {
+  private showGameOverScreen(won: boolean, roundScoreHint?: number) {
     if (!this.gameOverScreen || !this.gameOverText) {
       return;
     }
 
-    // Update game over text
+    // Update header text
     this.gameOverText.setText(won ? "YOU WIN!" : "GAME OVER");
     this.gameOverText.setColor(won ? "#00ff00" : "#ff0000");
 
-    // Update score display
-    const scoreDisplay = this.gameOverScreen.list[1] as Phaser.GameObjects.Text;
-    if (scoreDisplay) {
-      scoreDisplay.setText(`Score: ${score}`);
+    const state: any = this.room?.state as any;
+    const local = state?.players?.get?.(this.localPlayerId) as PlayerState | undefined;
+    const isGM = this.localPlayerIsGM === true || (local?.role as any) === "gm";
+
+    // Round score: birds -> pipes passed; GM -> time to end in seconds
+    let roundScoreText = "Score: 0";
+    if (isGM) {
+      const tSec = Number(state?.difficulty ?? 0);
+      const t = Math.max(0, Math.round(tSec * 10) / 10);
+      roundScoreText = `Time: ${t}s`;
+    } else {
+      const s = typeof roundScoreHint === "number" ? roundScoreHint : Number(local?.score ?? 0);
+      roundScoreText = `Score: ${Math.max(0, Math.floor(s))}`;
+    }
+    this.gameOverScoreText?.setText(roundScoreText);
+
+    // Personal high
+    let highText = isGM
+      ? `Best GM time: -`
+      : `High: ${Math.max(0, Math.floor(Number((local as any)?.birdHighScore ?? 0)))}`;
+    if (isGM) {
+      const best = Number((local as any)?.pigBestTime ?? 0);
+      highText = best > 0 ? `Best GM time: ${Math.round(best * 10) / 10}s` : `Best GM time: -`;
+    }
+    this.gameOverHighText?.setText(highText);
+
+    // Team scores
+    const birdWins = Math.max(0, Math.floor(Number(state?.birdWins ?? state?.birdsWins ?? 0)));
+    const pigWins = Math.max(0, Math.floor(Number(state?.pigWins ?? 0)));
+    this.gameOverTeamsText?.setText(`Bird wins: ${birdWins} | Pig wins: ${pigWins}`);
+
+    // Show the overlay
+    this.gameOverScreen.setVisible(true);
+    // Update background sizing after latest text updates
+    this.updateGameOverPanelBackground();
+
+    // Animate in: fade overlay and scale panel
+    try { this.gameOverFadeTween?.stop(); } catch { /* noop */ }
+    try { this.gameOverShowTween?.stop(); } catch { /* noop */ }
+    if (this.gameOverScreen) {
+      this.gameOverScreen.setAlpha(0);
+      this.gameOverFadeTween = this.tweens.add({
+        targets: this.gameOverScreen,
+        alpha: { from: 0, to: 1 },
+        duration: 180,
+        ease: 'Quad.easeOut',
+      });
+    }
+    if (this.gameOverPanel) {
+      this.gameOverPanel.setScale(0.85);
+      this.gameOverShowTween = this.tweens.add({
+        targets: this.gameOverPanel,
+        scaleX: 1,
+        scaleY: 1,
+        duration: 260,
+        ease: 'Back.out',
+      });
     }
 
-    // Show the screen
-    this.gameOverScreen.setVisible(true);
-
-    console.log(`Game over screen shown - Won: ${won}, Score: ${score}`);
+    console.log(`Game over screen shown - Won: ${won}, Role: ${isGM ? "GM" : "Bird"}`);
   }
 
   private restartGame() {
@@ -1534,6 +1818,8 @@ export class Game extends Scene {
 
     if (!this.readyButtonBackground || !this.readyButtonLabel || !this.readyCountText) {
       console.log("Ready UI elements not initialized");
+      // Ensure skin selection is hidden if we cannot fully update lobby UI
+      this.setSkinSelectionVisible(false);
       return;
     }
 
@@ -1543,6 +1829,8 @@ export class Game extends Scene {
       this.readyButtonBackground.disableInteractive();
       this.readyButtonLabel.setVisible(false);
       this.readyCountText.setVisible(false);
+      // Hide skin selection when room is unavailable
+      this.setSkinSelectionVisible(false);
       return;
     }
 
@@ -1575,6 +1863,11 @@ export class Game extends Scene {
     this.readyButtonBackground.setVisible(showLobbyUi);
     this.readyButtonLabel.setVisible(showLobbyUi);
     this.setSkinSelectionVisible(showLobbyUi && !this.localPlayerIsGM);
+    // If entering lobby and the panel doesn't exist yet, (re)build it from cached options
+    if (showLobbyUi && !this.skinSelectionContainer && this.skinOptions.length > 0) {
+      this.rebuildSkinSelection();
+      this.setSkinSelectionVisible(true);
+    }
 
     if (showLobbyUi) {
       this.readyButtonLabel.setText(this.localPlayerReady ? "Cancel Ready" : "Ready Up");
@@ -1617,11 +1910,142 @@ export class Game extends Scene {
       console.warn("Error leaving room while returning to menu:", e);
     }
 
-    // Clean up some UI elements explicitly
+    // Hide the game over screen immediately; full cleanup runs on shutdown
     this.gameOverScreen?.setVisible(false);
 
     // Transition back to main menu for role re-selection
     this.scene.start("MainMenu");
+  }
+
+  // Scene lifecycle hooks
+  private onShutdown() {
+    this.cleanupScene();
+  }
+
+  private onDestroy() {
+    this.cleanupScene();
+    try { this.events.removeAllListeners(); } catch { /* noop */ }
+  }
+
+  // Centralized cleanup for UI, listeners, timers, tweens, and network
+  private cleanupScene() {
+    // Stop input listeners
+    try { this.input.removeAllListeners(); } catch { /* noop */ }
+    try { this.input.keyboard?.removeAllListeners(); } catch { /* noop */ }
+
+    // Kill tweens and timers in this scene
+    try { this.tweens.killAll(); } catch { /* noop */ }
+    try { this.time.removeAllEvents(); } catch { /* noop */ }
+    if (this.statusIntroTween) {
+      try { this.statusIntroTween.stop(); } catch { /* noop */ }
+      this.statusIntroTween = undefined;
+    }
+    if (this.statusIntroHold) {
+      try { this.statusIntroHold.remove(false); } catch { /* noop */ }
+      this.statusIntroHold = undefined;
+    }
+
+    // Stop any playing sounds from this scene
+    try { this.sound.stopAll(); } catch { /* noop */ }
+
+    // Clear win banner/timers
+    if (this.winBannerTimeout) {
+      try { this.winBannerTimeout.remove(false); } catch { /* noop */ }
+      this.winBannerTimeout = undefined;
+    }
+    if (this.pigFlashTween) {
+      try { this.pigFlashTween.stop(); } catch { /* noop */ }
+      this.pigFlashTween = undefined;
+    }
+
+    // Destroy UI elements and containers
+    try { this.stagePopup?.destroy(true); } catch { /* noop */ } this.stagePopup = undefined;
+    try { this.roomStatusText?.destroy(); } catch { /* noop */ } this.roomStatusText = undefined;
+    try { this.scoreText?.destroy(); } catch { /* noop */ } this.scoreText = undefined as any;
+    try { this.scoreBackdrop?.destroy(); } catch { /* noop */ } this.scoreBackdrop = undefined as any;
+    try { this.statusText?.destroy(); } catch { /* noop */ } this.statusText = undefined as any;
+    try { this.readyCountText?.destroy(); } catch { /* noop */ } this.readyCountText = undefined as any;
+    try { this.readyButtonLabel?.destroy(); } catch { /* noop */ } this.readyButtonLabel = undefined;
+    try { this.readyButtonBackground?.destroy(); } catch { /* noop */ } this.readyButtonBackground = undefined;
+    try { this.gameOverText?.destroy(); } catch { /* noop */ } this.gameOverText = undefined;
+    try { this.restartButtonLabel?.destroy(); } catch { /* noop */ } this.restartButtonLabel = undefined;
+    try { this.restartButton?.destroy(); } catch { /* noop */ } this.restartButton = undefined;
+    try { this.returnButtonLabel?.destroy(); } catch { /* noop */ } this.returnButtonLabel = undefined;
+    try { this.returnButton?.destroy(); } catch { /* noop */ } this.returnButton = undefined;
+    try { this.gameOverScreen?.destroy(true); } catch { /* noop */ } this.gameOverScreen = undefined;
+
+    // Volume UI
+    try { this.volumeSliderKnob?.destroy(); } catch { /* noop */ } this.volumeSliderKnob = undefined;
+    try { this.volumeSliderHitArea?.destroy(); } catch { /* noop */ } this.volumeSliderHitArea = undefined as any;
+    try { this.volumeSlider?.destroy(); } catch { /* noop */ } this.volumeSlider = undefined;
+    try { this.volumeText?.destroy(); } catch { /* noop */ } this.volumeText = undefined;
+    this.isDraggingVolume = false;
+
+    // GM UI and guides
+    try { this.gmPreviewSprite?.destroy(); } catch { /* noop */ } this.gmPreviewSprite = undefined;
+    try { this.gmChargeText?.destroy(); } catch { /* noop */ } this.gmChargeText = undefined;
+    try { this.gmToolbar?.destroy(true); } catch { /* noop */ } this.gmToolbar = undefined;
+    this.gmToolButtons.clear();
+    try { this.gmGapGfxTop?.destroy(); } catch { /* noop */ } this.gmGapGfxTop = undefined;
+    try { this.gmGapGfxBottom?.destroy(); } catch { /* noop */ } this.gmGapGfxBottom = undefined;
+    try { this.gmXClampTint?.destroy(); } catch { /* noop */ } this.gmXClampTint = undefined;
+
+    // Pig King UI
+    try { this.pigAvatar?.destroy(); } catch { /* noop */ } this.pigAvatar = undefined;
+    try { this.pigBarText?.destroy(); } catch { /* noop */ } this.pigBarText = undefined;
+    try { this.pigBarFill?.destroy(); } catch { /* noop */ } this.pigBarFill = undefined;
+    try { this.pigBarBg?.destroy(); } catch { /* noop */ } this.pigBarBg = undefined;
+    try { this.pigBarContainer?.destroy(true); } catch { /* noop */ } this.pigBarContainer = undefined;
+
+    // Skin selection UI
+    try { this.skinSelectionContainer?.destroy(true); } catch { /* noop */ } this.skinSelectionContainer = undefined;
+    this.skinSlotElements.clear();
+    this.skinOptions = [];
+
+    // Background and ground
+    try { this.background?.destroy(); } catch { /* noop */ }
+    try { this.ground?.destroy(); } catch { /* noop */ }
+
+    // Destroy all sprites and clear maps
+    try {
+      this.playerSprites.forEach((s) => { try { s.destroy(); } catch { /* noop */ } });
+      this.playerSprites.clear();
+    } catch { /* noop */ }
+    try {
+      this.pipeSprites.forEach(({ top, bottom }) => { try { top.destroy(); } catch { } try { bottom.destroy(); } catch { } });
+      this.pipeSprites.clear();
+    } catch { /* noop */ }
+    try {
+      this.placedObstacleSprites.forEach(({ img }) => { try { img.destroy(); } catch { /* noop */ } });
+      this.placedObstacleSprites.clear();
+    } catch { /* noop */ }
+    try {
+      this.powerUpSprites.forEach(({ img }) => { try { img.destroy(); } catch { /* noop */ } });
+      this.powerUpSprites.clear();
+    } catch { /* noop */ }
+
+    // Remove any remaining display items defensively
+    try { this.children.removeAll(true); } catch { /* noop */ }
+
+    // Unsubscribe room listeners and close connection
+    if (this.room) {
+      try { (this.room as any)?.removeAllListeners?.(); } catch { /* noop */ }
+      try { void this.room.leave(true); } catch { /* noop */ }
+      this.room = undefined;
+    }
+
+    // Reset local flags/state
+    this.localPlayerId = "";
+    this.localPlayerReady = false;
+    this.lastKnownRunning = false;
+    this.lastKnownStage = 0;
+    this.joinRole = "bird";
+    this.localPlayerIsGM = false;
+    this.gmToolSelected = null;
+    this.gmCharges = 2;
+    this.gmMaxCharges = 2;
+    this.gmNextReadyAt = 0;
+    this.currentScrollSpeed = this.baseScrollSpeed;
   }
 
   private registerStateListeners() {
@@ -1756,7 +2180,17 @@ export class Game extends Scene {
     // Power-up pickup FX (broadcast from server)
     this.room.onMessage("powerUpPicked", (payload: { playerId: string; type: string; name: string; x: number; y: number }) => {
       const isLocal = payload?.playerId === this.localPlayerId;
-      this.showPowerUpPickup(payload?.x ?? 0, payload?.y ?? 0, payload?.name ?? "", isLocal);
+      const px = payload?.x ?? 0;
+      const py = payload?.y ?? 0;
+      const ptype = (payload?.type ?? "").toLowerCase();
+
+      this.showPowerUpPickup(px, py, payload?.name ?? "", isLocal);
+
+      // Special case: hammer pickup triggers a thrown hammer animation towards the Pig King avatar
+      if (ptype === "hammer") {
+        this.throwHammerToPig(px, py);
+      }
+
       try {
         this.sound.play(isLocal ? "point" : "swoosh", { volume: isLocal ? 0.5 : 0.35 });
       } catch { }
@@ -1774,13 +2208,17 @@ export class Game extends Scene {
     });
 
     $(this.room.state).onChange((changes: any[]) => {
-      console.log("Room state changed:", changes);
+      // console.log("Room state changed:", changes);
       if (changes && Array.isArray(changes)) {
         changes.forEach((change) => {
           console.log("State change field:", change.field, "value:", change.value);
           if (change.field === "running" || change.field === "winnerId" || change.field === "stage") {
             console.log("Updating status message due to state change:", change.field);
             this.updateStatusMessage();
+          }
+          if (change.field === "running" && !!change.value === true) {
+            // Redundantly ensure selection UI is hidden the moment the round starts
+            this.setSkinSelectionVisible(false);
           }
           if (change.field === "stage") {
             console.log("Stage changed, refreshing scoreboard");
@@ -1791,7 +2229,7 @@ export class Game extends Scene {
           }
           if (change.field === "pigKing") {
             const pk = (this.room!.state as any).pigKing as PigKingState | undefined;
-            if (pk) this.updatePigHealthUI(pk.health, pk.maxHealth);
+            if (pk) this.schedulePigHealthUI(pk.health, pk.maxHealth);
           }
         });
       } else {
@@ -1808,7 +2246,7 @@ export class Game extends Scene {
       pig$.onChange((_changes: any[]) => {
         const latest = (this.room!.state as any).pigKing as PigKingState | undefined;
         if (!latest) return;
-        this.updatePigHealthUI(latest.health, latest.maxHealth);
+        this.schedulePigHealthUI(latest.health, latest.maxHealth);
       });
     }
 
@@ -1818,37 +2256,84 @@ export class Game extends Scene {
   private createPigHealthUI() {
     const width = Number(this.game.config.width);
     const margin = 18;
-    const container = this.add.container(width - margin, margin).setDepth(120).setScrollFactor(0);
+    const padLeft = 6;   // bring avatar closer to the left edge
+    const padRight = 12; // keep a little breathing room on the right
+    const spacing = 0;   // gap between avatar, bar, and text
+    const extraTextSpace = 15; // ensure emoji + numbers never clip
 
-    const bgWidth = this.pigBarWidth + 110 + this.pigAvatarSize;
-    const bg = this.add.rectangle(0, 0, bgWidth, 48, 0x000000, 0.45).setOrigin(1, 0).setStrokeStyle(2, 0xffffff, 0.35);
+    const container = this.add
+      .container(width - margin, margin)
+      .setDepth(120)
+      .setScrollFactor(0);
 
-    // Avatar at left side
-    const avatarX = -bgWidth + this.pigAvatarSize / 2 + 8;
-    const avatarY = 4;
-    const avatar = this.add.image(avatarX, avatarY, "pig-king-cropped").setOrigin(0.5, 0).setDisplaySize(this.pigAvatarSize, this.pigAvatarSize);
+    // Compute background width so avatar hugs the bar, with room for the HP text
+    const bgWidth = padLeft + padRight + this.pigAvatarSize + spacing + this.pigBarWidth + spacing + extraTextSpace;
+    const bgHeight = 52;
+
+    // Soft drop shadow for a fun, layered look
+    const shadow = this.add
+      .rectangle(2, 2, bgWidth, bgHeight, 0x000000, 0.28)
+      .setOrigin(1, 0)
+      .setScrollFactor(0);
+
+    const bg = this.add
+      .rectangle(0, 0, bgWidth, bgHeight, 0x000000, 0.48)
+      .setOrigin(1, 0)
+      .setStrokeStyle(2, 0xffffff, 0.35);
+
+    // Layout anchors (container-local coordinates, right-aligned)
+    const panelRightX = 0; // bg origin (1,0) places right edge at x=0
+    const avatarLeftX = -bgWidth + padLeft;
+    const avatarCenterX = avatarLeftX + this.pigAvatarSize / 2;
+    const contentTopY = 6;
+    const barY = 40; // push bar slightly lower to avoid any label overlap
+    const barRightX = panelRightX - padRight; // bar ends padding away from the right edge
+    const barLeftX = barRightX - this.pigBarWidth;
+
+    // Avatar sits left and vertically aligned with the content block
+    const avatar = this.add
+      .image(avatarCenterX, contentTopY, "pig-king-cropped")
+      .setOrigin(0.5, 0)
+      .setDisplaySize(this.pigAvatarSize, this.pigAvatarSize)
+      .setDepth(121);
 
     // Label above bar, aligned with bar left
-    const label = this.add.text(-10 - this.pigBarWidth, 6, "Pig King", {
-      fontFamily: "Arial Black",
-      fontSize: 16,
-      color: "#ffd369",
-      stroke: "#000000",
-      strokeThickness: 4,
-    }).setOrigin(0, 0);
+    const label = this.add
+      .text(barLeftX, contentTopY + 2, "Pig King 👑", {
+        fontFamily: "Arial Black",
+        fontSize: 16,
+        color: "#ffd369",
+        stroke: "#000000",
+        strokeThickness: 4,
+      })
+      .setOrigin(0, 0)
+      .setDepth(121);
 
-    const barBg = this.add.rectangle(-10, 28, this.pigBarWidth, this.pigBarHeight, 0x3a3a3a, 0.9).setOrigin(1, 0.5);
-    const barFill = this.add.rectangle(-10 - this.pigBarWidth, 28, this.pigBarWidth, this.pigBarHeight, 0xe74c3c, 0.95).setOrigin(0, 0.5);
-    const text = this.add.text(-10 - this.pigBarWidth / 2, 28, "--/--", {
-      fontFamily: "Arial Black",
-      fontSize: 14,
-      color: "#ffffff",
-      stroke: "#000000",
-      strokeThickness: 4,
-      align: "center",
-    }).setOrigin(0.5);
+    // Health bar background and fill
+    const barBg = this.add
+      .rectangle(barRightX, barY, this.pigBarWidth, this.pigBarHeight, 0x3a3a3a, 0.9)
+      .setOrigin(1, 0.5)
+      .setDepth(121);
 
-    container.add([bg, avatar, label, barBg, barFill, text]);
+    const barFill = this.add
+      .rectangle(barLeftX, barY, this.pigBarWidth, this.pigBarHeight, 0xe74c3c, 0.95)
+      .setOrigin(0, 0.5)
+      .setDepth(122);
+
+    // HP text now sits to the right of the bar to avoid overlapping
+    const text = this.add
+      .text(panelRightX - padRight, barY, "--/--", {
+        fontFamily: "Arial Black",
+        fontSize: 14,
+        color: "#ffffff",
+        stroke: "#000000",
+        strokeThickness: 4,
+        align: "right",
+      })
+      .setOrigin(1, 0.5)
+      .setDepth(123);
+
+    container.add([shadow, bg, avatar, label, barBg, barFill, text]);
 
     this.pigBarContainer = container;
     this.pigBarBg = barBg;
@@ -1864,13 +2349,18 @@ export class Game extends Scene {
     const pct = m > 0 ? Phaser.Math.Clamp(h / m, 0, 1) : 0;
     const fillW = this.pigBarWidth * pct;
 
-    // Move/resize the fill rect by changing its x and width
-    this.pigBarFill.x = -10 - this.pigBarWidth;
+    // Move/resize the fill rect by changing its x and width (left-aligned to bar background)
+    // Recompute based on current barBg position so layout stays consistent if resolution changes
+    if (this.pigBarBg) {
+      const barRightX = (this.pigBarBg.x as number);
+      const barLeftX = barRightX - this.pigBarWidth;
+      this.pigBarFill.x = barLeftX;
+    }
     this.pigBarFill.width = fillW;
     // Gradient color: 0 -> red, 0.5 -> yellow, 1 -> green
     const color = this.getHealthBarColor(pct);
     this.pigBarFill.setFillStyle(color, this.pigFlashTween ? this.pigBarFill.alpha : 0.95);
-    this.pigBarText.setText(`${h}/${m}`);
+    this.pigBarText.setText(`❤️ ${h}/${m}`);
     this.pigBarContainer.setVisible(m > 0);
 
     // Flash the bar briefly if damage occurred
@@ -1878,6 +2368,28 @@ export class Game extends Scene {
       this.flashPigHealthBar();
     }
     this.lastPigHealth = h;
+  }
+
+  // Schedule the UI health update so it lands when the thrown hammer hits
+  private schedulePigHealthUI(health: number, max: number) {
+    const now = this.time.now;
+    const applyAt = Math.max(now, this.pigImpactHoldUntil);
+    // If there's effectively no hold, apply immediately
+    if (applyAt <= now + 5) {
+      this.updatePigHealthUI(health, max);
+      return;
+    }
+    // Otherwise, store as pending and schedule once
+    this.pigPendingUI = { health, max };
+    try { this.pigUIApplyTimer?.remove(false); } catch { /* noop */ }
+    const delay = Math.max(0, applyAt - now);
+    this.pigUIApplyTimer = this.time.delayedCall(delay, () => {
+      const pending = this.pigPendingUI;
+      this.pigPendingUI = undefined;
+      if (pending) {
+        this.updatePigHealthUI(pending.health, pending.max);
+      }
+    });
   }
 
   private flashPigHealthBar() {
@@ -1947,11 +2459,23 @@ export class Game extends Scene {
 
     this.playerCache.set(sessionId, { alive: player.alive, score: player.score, ready: player.ready, skin: player.skin });
 
+    // If player joins already shielded, render aura immediately
+    if (!this.localPlayerIsGM) {
+      this.updateShieldVisual(sessionId, player);
+    }
+
     if (sessionId === this.localPlayerId) {
       this.localPlayerReady = player.ready;
       this.localPlayerIsGM = isGM;
       console.log("Set local player ready state to:", player.ready, "isGM:", isGM);
       this.updateGmUiVisibility();
+      // Ensure GM never sees skin selection UI
+      if (this.localPlayerIsGM) {
+        this.setSkinSelectionVisible(false);
+        try { this.skinSelectionContainer?.destroy(true); } catch { /* noop */ }
+        this.skinSelectionContainer = undefined;
+        this.skinSlotElements.clear();
+      }
     }
 
     if (!isGM) {
@@ -1971,6 +2495,11 @@ export class Game extends Scene {
       sprite.destroy();
     }
     this.playerSprites.delete(sessionId);
+    const aura = this.shieldAuras.get(sessionId);
+    if (aura) {
+      try { aura.destroy(); } catch { /* noop */ }
+      this.shieldAuras.delete(sessionId);
+    }
     this.playerCache.delete(sessionId);
     if (sessionId === this.localPlayerId) {
       this.localPlayerReady = false;
@@ -2000,9 +2529,13 @@ export class Game extends Scene {
       if (cached.alive && !player.alive && sessionId === this.localPlayerId) {
         this.sound.play("hit", { volume: 0.4 });
         this.sound.play("die", { volume: 0.4, delay: 0.1 });
+        // Show summary when local player dies mid-round
+        this.showGameOverScreen(false, player.score);
       }
       if (player.score > cached.score && sessionId === this.localPlayerId) {
+        const diff = Math.max(1, Math.floor(player.score - cached.score));
         this.sound.play("point", { volume: 0.5 });
+        this.animateLocalScoreIncrease(diff, player.score);
       }
     }
 
@@ -2021,6 +2554,14 @@ export class Game extends Scene {
       sprite.setAlpha(0.8);
     }
 
+    // Maintain shield aura based on state, and follow sprite
+    this.updateShieldVisual(sessionId, player);
+    const aura = this.shieldAuras.get(sessionId);
+    if (aura) {
+      aura.x = sprite.x;
+      aura.y = sprite.y;
+    }
+
     this.playerCache.set(sessionId, { alive: player.alive, score: player.score, ready: player.ready, skin: player.skin });
     if (sessionId === this.localPlayerId) {
       this.localPlayerReady = player.ready;
@@ -2033,7 +2574,7 @@ export class Game extends Scene {
     );
     if (shouldRefresh || scoreChanged) {
       this.refreshScoreboard();
-      this.updateStatusMessage();
+      //this.updateStatusMessage();
     }
     if (readyChanged) {
       console.log("Ready state changed for player:", sessionId, "to:", player.ready);
@@ -2041,6 +2582,77 @@ export class Game extends Scene {
     }
     if (skinChanged) {
       this.updateSkinSlots();
+    }
+  }
+
+  private updateShieldVisual(sessionId: string, player: PlayerState) {
+    const sprite = this.playerSprites.get(sessionId);
+    if (!sprite) return;
+    const active = !!(player as any)?.shield;
+    const expiring = !!(player as any)?.shieldExpiring;
+    const existing = this.shieldAuras.get(sessionId);
+    if (active) {
+      if (!existing) {
+        // Create a light-blue glow ellipse behind the sprite
+        const radius = 28; // slightly larger than bird sprite
+        const aura = this.add.ellipse(sprite.x, sprite.y, radius * 2, radius * 2, 0x66ccff, 0.18)
+          .setDepth(4)
+          .setBlendMode(Phaser.BlendModes.ADD);
+        // Add a subtle rim
+        aura.setStrokeStyle(2, 0x99ddff, 0.85);
+        this.shieldAuras.set(sessionId, aura);
+        // Gentle pulse by default
+        this.tweens.add({
+          targets: aura,
+          scaleX: { from: 0.95, to: 1.08 },
+          scaleY: { from: 0.95, to: 1.08 },
+          alpha: { from: 0.16, to: 0.24 },
+          yoyo: true,
+          repeat: -1,
+          duration: 700,
+          ease: "Sine.easeInOut",
+        });
+        (aura as any).__mode = "normal";
+      } else {
+        // Update flashing mode based on expiring state
+        const aura = existing;
+        const currentMode = (aura as any).__mode || "normal";
+        const desiredMode = expiring ? "expiring" : "normal";
+        if (currentMode !== desiredMode) {
+          this.tweens.killTweensOf(aura);
+          if (expiring) {
+            // Faster flashing and brighter rim during grace timer
+            aura.setStrokeStyle(2, 0xffffff, 0.95);
+            this.tweens.add({
+              targets: aura,
+              alpha: { from: 0.15, to: 0.55 },
+              scaleX: { from: 0.92, to: 1.10 },
+              scaleY: { from: 0.92, to: 1.10 },
+              yoyo: true,
+              repeat: -1,
+              duration: 120,
+              ease: "Sine.easeInOut",
+            });
+          } else {
+            // Return to gentle pulse
+            aura.setStrokeStyle(2, 0x99ddff, 0.85);
+            this.tweens.add({
+              targets: aura,
+              scaleX: { from: 0.95, to: 1.08 },
+              scaleY: { from: 0.95, to: 1.08 },
+              alpha: { from: 0.16, to: 0.24 },
+              yoyo: true,
+              repeat: -1,
+              duration: 700,
+              ease: "Sine.easeInOut",
+            });
+          }
+          (aura as any).__mode = desiredMode;
+        }
+      }
+    } else if (existing) {
+      try { existing.destroy(); } catch { /* noop */ }
+      this.shieldAuras.delete(sessionId);
     }
   }
 
@@ -2089,19 +2701,19 @@ export class Game extends Scene {
   }
 
   private addPipe(pipe: PipeState) {
-    console.log("Adding pipe:", pipe.id, "at x:", pipe.x, "Ytop:", pipe.Ytop);
+    //console.log("Adding pipe:", pipe.id, "at x:", pipe.x, "Ytop:", pipe.Ytop);
 
     const top = this.add.image(pipe.x, pipe.Ytop, "pipe");
     top.setOrigin(0.5, 0);
     top.setFlipY(true);
     top.setDepth(3);
-    console.log("Created top pipe at:", pipe.x, pipe.Ytop);
+    //console.log("Created top pipe at:", pipe.x, pipe.Ytop);
 
     const bottom = this.add.image(pipe.x, pipe.Ybottom, "pipe-red");
     bottom.setOrigin(0.5, 0);
     bottom.setFlipY(false);
     bottom.setDepth(4);
-    console.log("Created bottom pipe at:", pipe.x, pipe.Ybottom);
+    //console.log("Created bottom pipe at:", pipe.x, pipe.Ybottom);
 
     this.pipeSprites.set(pipe.id, {
       top,
@@ -2111,7 +2723,7 @@ export class Game extends Scene {
       targetBottomY: pipe.Ybottom,
     });
     this.updatePipe(pipe);
-    console.log("Pipe added successfully, total pipes:", this.pipeSprites.size);
+    //console.log("Pipe added successfully, total pipes:", this.pipeSprites.size);
   }
 
   private updatePipe(pipe: PipeState) {
@@ -2201,7 +2813,7 @@ export class Game extends Scene {
       const lines = players.map((player) => {
         // Game Master spectates only
         if ((player as any).role === "gm") {
-          return `${player.isLocal ? "* " : ""}${player.name} (GM) — Spectating`;
+          return `${player.isLocal ? "* " : ""}${player.name} (Pig King)`;
         }
         const prefix = player.isLocal ? "▶ " : "";
         if (running) {
@@ -2220,8 +2832,8 @@ export class Game extends Scene {
     const verticalPadding = 30;
     this.scoreBackdrop.setSize(this.scoreText.width + padding, this.scoreText.height + verticalPadding);
     this.scoreBackdrop.setPosition(this.scoreText.x, this.scoreText.y);
-    this.updateReadyUI();
-    void this.updateDiscordActivityPresence();
+    //this.updateReadyUI();
+    //void this.updateDiscordActivityPresence();
   }
 
   private updateStatusMessage() {
@@ -2245,19 +2857,21 @@ export class Game extends Scene {
     }
 
     if (!running) {
+      // Ensure status text is visible again in lobby/end screens
+      try { this.statusText.setVisible(true).setAlpha(1); } catch { /* noop */ }
       const readyCount = this.getReadyCount();
 
       // Team win handling
       if (winnerId === "__BIRDS__") {
         this.showWinBanner("birds");
         this.statusText.setText("Birds win!\nPress Ready to play again.");
-        // Show win screen for birds (non-GM), loss for GM
+        // Show summary: birds (non-GM) show their round score; GM shows loss/time summary
         const isLocalBird = !this.localPlayerIsGM;
         const localPlayer = this.room.state.players.get(this.localPlayerId) as PlayerState | undefined;
         if (isLocalBird) {
-          this.showGameOverScreen(true, localPlayer?.score || 0);
+          this.showGameOverScreen(true, localPlayer?.score ?? 0);
         } else {
-          this.showGameOverScreen(false, 0);
+          this.showGameOverScreen(false);
         }
         return;
       }
@@ -2268,12 +2882,12 @@ export class Game extends Scene {
         this.showWinBanner("pig");
         this.statusText.setText("Pig King wins!\nPress Ready to play again.");
         if (this.localPlayerIsGM) {
-          // GM wins
-          this.showGameOverScreen(true, 0);
+          // GM wins -> show time summary
+          this.showGameOverScreen(true);
         } else {
-          // Birds lose
+          // Birds lose -> show round score summary
           const localPlayer = this.room.state.players.get(this.localPlayerId) as PlayerState | undefined;
-          this.showGameOverScreen(false, localPlayer?.score || 0);
+          this.showGameOverScreen(false, localPlayer?.score ?? 0);
         }
         return;
       }
@@ -2291,10 +2905,13 @@ export class Game extends Scene {
         this.statusText.setText("Waiting for players to join...");
       }
     } else {
-      const stagePrefix = stageValue > 0 ? `Stage ${stageValue}/${this.maxStage}\n` : "";
-      // New win conditions: Birds win when Pig King dies; Pig King wins if all birds die
+      // Hide status text during the round (it is animated once at start)
+      if (!this.isStatusIntroActive) {
+        try { this.statusText.setVisible(false); } catch { /* noop */ }
+      }
+      // Ensure lobby-only UI is hidden while in-game
       this.clearWinBanner();
-      this.statusText.setText(`${stagePrefix}Birds: survive and defeat the Pig King!`);
+      this.setSkinSelectionVisible(false);
     }
     this.updateReadyUI();
     void this.updateDiscordActivityPresence();
@@ -2405,6 +3022,7 @@ export class Game extends Scene {
   }
 
   private showPowerUpPickup(x: number, y: number, label: string, isLocal: boolean) {
+    // Text popup
     const txt = this.add.text(x, y - 24, label || "Power Up!", {
       fontFamily: "Arial Black",
       fontSize: 18,
@@ -2412,7 +3030,7 @@ export class Game extends Scene {
       stroke: "#000000",
       strokeThickness: 4,
       align: "center",
-    }).setOrigin(0.5).setDepth(30);
+    }).setOrigin(0.5).setDepth(80);
 
     this.tweens.add({
       targets: txt,
@@ -2422,6 +3040,182 @@ export class Game extends Scene {
       ease: 'Quad.out',
       onComplete: () => txt.destroy(),
     });
+
+    // Visual FX at pickup point (shared for all players via server broadcast)
+    try {
+      const hasAnim = this.anims.exists("pickup_fx");
+      if (hasAnim) {
+        const fx = this.add.sprite(x, y, "pickup_anim").setDepth(79).setScale(1.5);
+        fx.once(Phaser.Animations.Events.ANIMATION_COMPLETE, () => fx.destroy());
+        fx.play("pickup_fx");
+      } else if (this.textures.exists("pickup_anim")) {
+        // Fallback: pulse the static image if no multi-frame sheet is available
+        const img = this.add.image(x, y, "pickup_anim").setDepth(79).setScale(0.9).setAlpha(0.95);
+        this.tweens.add({
+          targets: img,
+          scale: 2.1,
+          alpha: 0,
+          duration: 450,
+          ease: 'Cubic.out',
+          onComplete: () => img.destroy(),
+        });
+      } else if (this.textures.exists("star")) {
+        // Last-resort fallback to star icon
+        const img = this.add.image(x, y, "star").setDepth(79).setScale(0.9);
+        this.tweens.add({
+          targets: img,
+          scale: 2.1,
+          alpha: 0,
+          duration: 450,
+          ease: 'Cubic.out',
+          onComplete: () => img.destroy(),
+        });
+      }
+    } catch { /* no-op */ }
+  }
+
+  private animateLocalScoreIncrease(diff: number, _newScore: number) {
+    // Pulse the scoreboard text (and backdrop) and spawn a floating +N indicator
+    try { this.scorePulseTween?.stop(); } catch { /* noop */ }
+    const pulseTargets: any[] = [];
+    if (this.scoreText) pulseTargets.push(this.scoreText);
+    if (this.scoreBackdrop) pulseTargets.push(this.scoreBackdrop);
+    if (pulseTargets.length > 0) {
+      // Reset scale to baseline before pulsing
+      pulseTargets.forEach((t) => { try { t.setScale?.(1); } catch { /* noop */ } });
+      this.scorePulseTween = this.tweens.add({
+        targets: pulseTargets,
+        scaleX: { from: 1, to: 1.15 },
+        scaleY: { from: 1, to: 1.15 },
+        duration: 100,
+        yoyo: true,
+        ease: 'Back.out',
+      });
+    }
+
+    // Floating +N text near the scoreboard
+    const x = this.scoreText?.x ?? (Number(this.game.config.width) / 2);
+    const y = (this.scoreText?.y ?? 40) - 10;
+    const pop = this.add.text(x, y, `+${diff}`, {
+      fontFamily: 'Arial Black',
+      fontSize: 24,
+      color: '#ffd369',
+      stroke: '#000000',
+      strokeThickness: 6,
+      align: 'center',
+    }).setOrigin(0.5).setDepth(12);
+    pop.setScale(0.8);
+    pop.setAlpha(0.0);
+    this.tweens.add({
+      targets: pop,
+      y: y - 24,
+      alpha: { from: 0, to: 1 },
+      scale: { from: 0.8, to: 1.0 },
+      duration: 180,
+      ease: 'Quad.easeOut',
+      onComplete: () => {
+        this.tweens.add({
+          targets: pop,
+          y: y - 40,
+          alpha: { from: 1, to: 0 },
+          duration: 220,
+          ease: 'Quad.easeIn',
+          onComplete: () => { try { pop.destroy(); } catch { /* noop */ } },
+        });
+      },
+    });
+  }
+
+  // Visual: throw a rotating hammer from pickup point towards the Pig King avatar in the UI.
+  private throwHammerToPig(startX: number, startY: number) {
+    try {
+      // Determine target position (Pig King avatar) in WORLD coordinates.
+      // Children inside a Container use local coordinates; convert via getBounds().
+      let targetX = Number(this.game.config.width) - 60;
+      let targetY = 46;
+      if (this.pigAvatar) {
+        try {
+          const b = this.pigAvatar.getBounds();
+          targetX = (b as any).centerX ?? b.x + b.width / 2;
+          targetY = (b as any).centerY ?? b.y + b.height / 2;
+        } catch {
+          // Fallback: approximate using container position if available
+          const pc = (this.pigBarContainer as any);
+          targetX = (pc?.x ?? targetX) + (this.pigAvatar.x as number);
+          targetY = (pc?.y ?? targetY) + (this.pigAvatar.y as number);
+        }
+      }
+
+      // If hammer texture not available, skip gracefully
+      if (!this.textures.exists("hammer")) {
+        return;
+      }
+
+      const hammer = this.add.image(startX, startY, "hammer").setDepth(200);
+      hammer.setOrigin(0.5, 0.5);
+      hammer.setScale(0.9);
+
+      // Compute travel duration based on distance for a consistent feel
+      const dx = targetX - startX;
+      const dy = targetY - startY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const duration = Phaser.Math.Clamp(300 + dist * 0.6, 450, 1200); // ms
+      // Hold back the health bar update until expected impact time (+small buffer)
+      const impactAt = this.time.now + duration + 100;
+      this.pigImpactHoldUntil = Math.max(this.pigImpactHoldUntil, impactAt);
+      // If we already queued a UI update, reschedule it to the later impact
+      if (this.pigPendingUI) {
+        try { this.pigUIApplyTimer?.remove(false); } catch { /* noop */ }
+        const delay = Math.max(0, this.pigImpactHoldUntil - this.time.now);
+        this.pigUIApplyTimer = this.time.delayedCall(delay, () => {
+          const pending = this.pigPendingUI!;
+          this.pigPendingUI = undefined;
+          this.updatePigHealthUI(pending.health, pending.max);
+        });
+      }
+
+      // Add slight arc by tweening y in two stages
+      const midX = startX + dx * 0.5;
+      const midY = startY + dy * 0.5 - Math.min(80, Math.max(20, dist * 0.1)); // arc peak
+
+      // First leg to midpoint with spin
+      this.tweens.add({
+        targets: hammer,
+        x: midX,
+        y: midY,
+        angle: 360,
+        duration: duration * 0.5,
+        ease: "Quad.out",
+        onComplete: () => {
+          // Second leg to target with additional spin
+          this.tweens.add({
+            targets: hammer,
+            x: targetX,
+            y: targetY,
+            angle: 720,
+            duration: duration * 0.5,
+            ease: "Quad.in",
+            onComplete: () => {
+              // Small impact pulse at the Pig King avatar
+              const impactScale = 1.2;
+              if (this.pigAvatar) {
+                this.tweens.add({
+                  targets: this.pigAvatar,
+                  scaleX: this.pigAvatar.scaleX * impactScale,
+                  scaleY: this.pigAvatar.scaleY * impactScale,
+                  yoyo: true,
+                  duration: 100,
+                  ease: "Sine.inOut",
+                });
+              }
+              hammer.destroy();
+            },
+          });
+        },
+      });
+    } catch {
+      // no-op
+    }
   }
 
   private getReadyCount() {

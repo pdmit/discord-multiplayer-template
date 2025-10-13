@@ -85,6 +85,10 @@ export class Preloader extends Scene {
     // Power-ups
     this.load.image("star", "star_32.png");
     this.load.image("hammer", "hammer_32.png");
+    this.load.image("coin", "coin.png");
+    // Pickup FX spritesheet (fallbacks handled if single-frame)
+    // Adjust frameWidth/frameHeight if your sheet uses a different size
+    this.load.spritesheet("pickup_anim", "pickup_anim.png", { frameWidth: 32, frameHeight: 32 });
     // Pig King avatar
     this.load.image("pig-king-cropped", "pig-king-cropped.png");
 
@@ -162,6 +166,19 @@ export class Preloader extends Scene {
       frameRate: 12,
       repeat: -1,
     });
+
+    // Create pickup animation if spritesheet has multiple frames
+    try {
+      const tex = this.textures.get("pickup_anim");
+      if (tex && tex.frameTotal > 1 && !this.anims.exists("pickup_fx")) {
+        this.anims.create({
+          key: "pickup_fx",
+          frames: this.anims.generateFrameNumbers("pickup_anim"),
+          frameRate: 6,
+          repeat: 0,
+        });
+      }
+    } catch { /* no-op */ }
 
     this.scene.start("MainMenu");
   }
