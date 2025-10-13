@@ -375,6 +375,20 @@ export class GameRoom extends Room<GameState> {
       entry.charges = Math.max(0, entry.charges - 1);
       this.sendGMChargeUpdate(client.sessionId);
     });
+
+    // GM cursor position update
+    this.onMessage("gmCursorMove", (client, message: { x?: number; y?: number }) => {
+      const player = this.state.players.get(client.sessionId);
+      if (!player || player.role !== "gm") {
+        return; // Only GM can update cursor
+      }
+
+      // Validate coordinates
+      if (typeof message?.x === "number" && typeof message?.y === "number") {
+        this.state.gmCursorX = message.x;
+        this.state.gmCursorY = message.y;
+      }
+    });
   }
 
   onLeave(client: Client): void {
@@ -580,7 +594,7 @@ export class GameRoom extends Room<GameState> {
   }
 
   private killPlayer(player: PlayerState, reason: string) {
-    return;
+    //return; // DEBUG: disable death
     player.alive = false;
     // Update personal bird high score on death
     try {
@@ -703,8 +717,8 @@ export class GameRoom extends Room<GameState> {
       for (const pipe of this.state.pipes) {
         const pipeLeft = pipe.x - this.pipeWidth / 2;
         const pipeRight = pipe.x + this.pipeWidth / 2;
-        const gapTop = pipe.Ytop;
-        const gapBottom = pipe.Ybottom;
+        const gapTop = pipe.Ytop + this.pipeHeight; // Bottom of top pipe (start of gap)
+        const gapBottom = pipe.Ybottom; // Top of bottom pipe (end of gap)
 
         const birdLeft = this.birdX - this.birdHalfWidth;
         const birdRight = this.birdX + this.birdHalfWidth;

@@ -140,6 +140,8 @@ export class Game extends Scene {
   private gmMaxCharges: number = 2;
   private gmNextReadyAt: number = 0;
   private gmChargeText?: Phaser.GameObjects.Text;
+  // GM cursor (visible to all players)
+  private gmCursor?: Phaser.GameObjects.Container;
 
   // Mirror server gap logic for client-side preview (constants must match server)
   private readonly previewMaxPipeGap = 300;
@@ -269,6 +271,8 @@ export class Game extends Scene {
     this.updateGmXClampTint();
     // Update GM charge UI
     this.updateGmChargeUi();
+    // Update GM cursor position
+    this.updateGmCursor();
 
     // Periodic sync for ready state changes and running state
     if (this.room && this.room.state && this.room.state.players) {
@@ -736,6 +740,9 @@ export class Game extends Scene {
     this.ensureGmXClampTint();
     this.updateGmXClampTint();
 
+    // Create GM cursor (visible to all players when GM is present)
+    this.createGmCursor();
+
     // Create Pig King health bar (top-right)
     this.createPigHealthUI();
   }
@@ -920,7 +927,7 @@ export class Game extends Scene {
   }
 
   private setSkinSelectionVisible(visible: boolean) {
-    if (!this.scene || !this.scene.sys) {
+    if (!this.scene) {
       console.warn("setSkinSelectionVisible() Scene is not initialized or has been destroyed.");
       return;
     }
@@ -1059,7 +1066,7 @@ export class Game extends Scene {
     const overlay = this.add.rectangle(0, 0, width, height, 0x000000, 0.7);
     this.gameOverScreen.add(overlay);
     overlay.setInteractive({ useHandCursor: false });
-    overlay.on("pointerdown", (pointer) => {      // do nothing — this just blocks input below
+    overlay.on("pointerdown", (pointer: Phaser.Input.Pointer) => {      // do nothing — this just blocks input below
     });
 
     // Inner panel to avoid overlap and keep consistent spacing
@@ -1267,6 +1274,10 @@ export class Game extends Scene {
 
     this.input.on("pointermove", (pointer: Phaser.Input.Pointer) => {
       this.updateGmPreviewPosition(pointer);
+      // Send cursor position to server if local player is GM
+      if (this.localPlayerIsGM && this.room) {
+        this.room.send("gmCursorMove", { x: pointer.worldX, y: pointer.worldY });
+      }
     });
   }
 
@@ -1534,6 +1545,95 @@ export class Game extends Scene {
 
     this.gmToolbar = container;
     container.setVisible(false);
+  }
+
+  private createGmCursor() {
+    // Create a cartoonish red cursor that will be visible to all players
+    // showing where the GM's cursor is positioned
+    const container = this.add.container(0, 0);
+    container.setDepth(100); // High depth to be above most elements
+
+    // Create a red hand cursor shape using graphics
+    const cursorGraphics = this.add.graphics();
+    cursorGraphics.lineStyle(3, 0x000000, 1); // Black outline
+    cursorGraphics.fillStyle(0xff3333, 1); // Bright red fill
+    
+    // Draw a cartoon hand/pointer shape
+    // Main pointer triangle
+    cursorGraphics.beginPath();
+    cursorGraphics.moveTo(0, 0);
+    cursorGraphics.lineTo(8, 24);
+    cursorGraphics.lineTo(3, 20);
+    cursorGraphics.lineTo(-2, 28);
+    cursorGraphics.lineTo(-7, 25);
+    cursorGraphics.lineTo(-2, 17);
+    cursorGraphics.lineTo(-8, 18);
+    cursorGraphics.closePath();
+    cursorGraphics.fillPath();
+    cursorGraphics.strokePath();
+
+    // Add a white highlight for cartoonish effect
+    const highlight = this.add.graphics();
+    highlight.fillStyle(0xffffff, 0.6);
+    highlight.fillCircle(0, 8, 3);
+
+    // Add a subtle glow/shadow effect
+    const glow = this.add.graphics();
+    glow.fillStyle(0xff0000, 0.3);
+    glow.fillCircle(0, 14, 20);
+    glow.setBlendMode(Phaser.BlendModes.ADD);
+
+    // Create a pulsing animation circle
+    const pulseCircle = this.add.graphics();
+    pulseCircle.lineStyle(2, 0xff3333, 0.8);
+    pulseCircle.strokeCircle(0, 14, 15);
+
+    container.add([glow, pulseCircle, cursorGraphics, highlight]);
+
+    // Add pulse animation
+    this.tweens.add({
+      targets: pulseCircle,
+      alpha: { from: 0.8, to: 0.2 },
+      scale: { from: 1, to: 1.3 },
+      duration: 800,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.easeInOut'
+    });
+
+    // Initially hidden until we get GM cursor data
+    container.setVisible(false);
+    this.gmCursor = container;
+  }
+
+  private updateGmCursor() {
+    if (!this.gmCursor || !this.room?.state) {
+      return;
+    }
+
+    const state = this.room.state as any;
+    
+    // Check if there's a GM in the game
+    const hasGM = state.gameMasterId && state.gameMasterId !== "";
+    
+    // Hide cursor if no GM or if local player is the GM (they see their own cursor)
+    if (!hasGM || this.localPlayerIsGM) {
+      this.gmCursor.setVisible(false);
+      return;
+    }
+
+    // Show and update GM cursor position
+    const gmX = state.gmCursorX ?? 0;
+    const gmY = state.gmCursorY ?? 0;
+    
+    // Smoothly interpolate cursor position for smooth movement
+    const currentX = this.gmCursor.x;
+    const currentY = this.gmCursor.y;
+    const lerpFactor = 0.3; // Smooth follow
+    
+    this.gmCursor.x = Phaser.Math.Linear(currentX, gmX, lerpFactor);
+    this.gmCursor.y = Phaser.Math.Linear(currentY, gmY, lerpFactor);
+    this.gmCursor.setVisible(true);
   }
 
   private updateGmUiVisibility() {

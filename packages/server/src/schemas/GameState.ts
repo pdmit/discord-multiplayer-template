@@ -157,4 +157,11 @@ export class GameState extends Schema {
 
   @type("number")
   pigWins: number = 0; // times Pig King (GM) won by eliminating birds
+
+  // GM cursor position for displaying to all players
+  @type("number")
+  gmCursorX: number = 0;
+
+  @type("number")
+  gmCursorY: number = 0;
 }
