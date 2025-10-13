@@ -468,7 +468,7 @@ export class Game extends Scene {
     this.stagePopup.add([bg, text, leftChevrons, rightChevrons]);
 
     // Play sound effect
-    this.sound.play("swoosh", { volume: 0.4 });
+    this.sound.play("swoosh", { volume: 0.1 });
 
     // Animate chevrons
     this.tweens.add({
@@ -1290,7 +1290,7 @@ export class Game extends Scene {
 
     //console.log("handleFlap() called");
     this.room.send("flap");
-    this.sound.play("wing", { volume: 0.4 });
+    this.sound.play("wing", { volume: 0.1 });
   }
 
   private showGameOverScreen(won: boolean, roundScoreHint?: number) {
@@ -1601,7 +1601,7 @@ export class Game extends Scene {
     // Client-side gate to avoid spamming when out of charges
     if (this.localPlayerIsGM && this.gmCharges <= 0) {
       // Optionally flash the charge text
-      try { this.sound.play("swoosh", { volume: 0.2 }); } catch { }
+      try { this.sound.play("swoosh", { volume: 0.05 }); } catch { }
       return;
     }
     const p = this.getPointerPosition(pointer);
@@ -1642,7 +1642,8 @@ export class Game extends Scene {
   private getCurrentPipeGapClient() {
     const difficulty = Number((this.room?.state as any)?.difficulty ?? 0);
     const gap = Math.max(this.previewMinPipeGap, this.previewMaxPipeGap - (difficulty * this.previewGapShrinkPerSec));
-    return gap;
+    //return gap;
+    return 0; // disable gap guides for now
   }
 
   // Create (if missing) the dashed horizontal guide lines at center +/- gap/2 (only within X preview region)
@@ -2192,7 +2193,7 @@ export class Game extends Scene {
       }
 
       try {
-        this.sound.play(isLocal ? "point" : "swoosh", { volume: isLocal ? 0.5 : 0.35 });
+        this.sound.play(isLocal ? "point" : "swoosh", { volume: isLocal ? 0.06 : 0.03 });
       } catch { }
     });
 
@@ -2527,14 +2528,14 @@ export class Game extends Scene {
     const scoreChanged = !cached || cached.score !== player.score;
     if (cached) {
       if (cached.alive && !player.alive && sessionId === this.localPlayerId) {
-        this.sound.play("hit", { volume: 0.4 });
-        this.sound.play("die", { volume: 0.4, delay: 0.1 });
+        this.sound.play("hit", { volume: 0.05 });
+        this.sound.play("die", { volume: 0.1, delay: 0.1 });
         // Show summary when local player dies mid-round
         this.showGameOverScreen(false, player.score);
       }
       if (player.score > cached.score && sessionId === this.localPlayerId) {
         const diff = Math.max(1, Math.floor(player.score - cached.score));
-        this.sound.play("point", { volume: 0.5 });
+        this.sound.play("point", { volume: 0.04 });
         this.animateLocalScoreIncrease(diff, player.score);
       }
     }

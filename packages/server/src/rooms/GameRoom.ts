@@ -230,8 +230,8 @@ export class GameRoom extends Room<GameState> {
       logger.info(`Assigned Game Master role to ${client.sessionId}`);
       // Initialize GM charges (2 max, 5s recharge)
       const now = Date.now();
-      this.gmCharges.set(client.sessionId, { charges: 2, lastRechargeAt: now });
-      client.send("gmChargeUpdate", { charges: 2, max: 2, nextInMs: 0 });
+      this.gmCharges.set(client.sessionId, { charges: 3, lastRechargeAt: now });
+      client.send("gmChargeUpdate", { charges: 3, max: 3, nextInMs: 0 });
     }
     // Only birds get a skin; GM does not reserve a skin
     if (player.role === "bird") {
@@ -264,11 +264,11 @@ export class GameRoom extends Room<GameState> {
       const now = Date.now();
       let entry = this.gmCharges.get(client.sessionId);
       if (!entry) {
-        entry = { charges: 2, lastRechargeAt: now };
+        entry = { charges: 3, lastRechargeAt: now };
         this.gmCharges.set(client.sessionId, entry);
       }
       // Recharge if time elapsed
-      if (entry.charges < 2) {
+      if (entry.charges < 3) {
         const elapsed = now - entry.lastRechargeAt;
         if (elapsed >= 5000) {
           const gained = Math.floor(elapsed / 5000);
@@ -276,7 +276,7 @@ export class GameRoom extends Room<GameState> {
           entry.lastRechargeAt += gained * 5000;
         }
       }
-      const nextInMs = entry.charges >= 2 ? 0 : (5000 - ((now - entry.lastRechargeAt) % 5000));
+      const nextInMs = entry.charges >= 3 ? 0 : (5000 - ((now - entry.lastRechargeAt) % 5000));
       if (entry.charges <= 0) {
         logger.warn(`gmPlaceObstacle rejected - no charges (next in ${nextInMs}ms)`);
         client.send("gmChargeUpdate", { charges: entry.charges, max: 2, nextInMs });
@@ -307,7 +307,8 @@ export class GameRoom extends Room<GameState> {
       //  - bottom of TOP pipe cannot be above top of screen -> (topY + pipeHeight) >= 0
       //  - top of BOTTOM pipe cannot be below bottom of screen -> (topY) <= worldHeight
       const midY = this.worldHeight / 2;
-      const halfGap = this.getCurrentPipeGap() / 2;
+      //const halfGap = this.getCurrentPipeGap() / 2;
+      const halfGap = 0;
 
       let clampedY = y;
       if (kind === "bottom") {
@@ -335,8 +336,8 @@ export class GameRoom extends Room<GameState> {
 
       // Spend charge and notify
       entry.charges = Math.max(0, entry.charges - 1);
-      const nextAfterSpend = entry.charges >= 2 ? 0 : (5000 - ((now - entry.lastRechargeAt) % 5000));
-      client.send("gmChargeUpdate", { charges: entry.charges, max: 2, nextInMs: nextAfterSpend });
+      const nextAfterSpend = entry.charges >= 3 ? 0 : (5000 - ((now - entry.lastRechargeAt) % 5000));
+      client.send("gmChargeUpdate", { charges: entry.charges, max: 3, nextInMs: nextAfterSpend });
     });
   }
 
