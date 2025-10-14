@@ -1,6 +1,10 @@
 import { Scene } from "phaser";
 import { authorizeDiscordUser } from "../utils/discordSDK";
 
+// Font constants for consistent styling across the game
+const FONT_PRIMARY = '"Jersey 10", "Arial Black", sans-serif';  // For headers, buttons, important text
+const FONT_SECONDARY = '"Nunito", "Arial", sans-serif';   // For body text, stats, secondary info
+
 export class MainMenu extends Scene {
   constructor() {
     super("MainMenu");
@@ -22,11 +26,11 @@ export class MainMenu extends Scene {
 
     this.add
       .text(Number(this.game.config.width) * 0.5, Number(this.game.config.height) * 0.5, "Choose Role", {
-        fontFamily: "Arial Black",
+        fontFamily: FONT_PRIMARY,
         fontSize: 36,
         color: "#ffffff",
         stroke: "#000000",
-        strokeThickness: 8,
+        strokeThickness: 6,
         align: "center",
       })
       .setOrigin(0.5);
@@ -48,11 +52,11 @@ export class MainMenu extends Scene {
         .setOrigin(0.5)
         .setInteractive({ useHandCursor: true });
       const text = this.add.text(centerX, y, label, {
-        fontFamily: "Arial Black",
+        fontFamily: FONT_PRIMARY,
         fontSize: 26,
         color: "#ffffff",
         stroke: "#000000",
-        strokeThickness: 6,
+        strokeThickness: 4,
         align: "center",
       }).setOrigin(0.5);
 

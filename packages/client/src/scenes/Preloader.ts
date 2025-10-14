@@ -94,6 +94,8 @@ export class Preloader extends Scene {
     // GM cursor hand sprites
     this.load.image("hand_pointing", "hand_pointing.png");
     this.load.image("hand_closed", "hand_closed.png");
+    // Player status orbs
+    this.load.image("orb_green", "orb_green.png");
 
     this.load.setPath("/.proxy/assets/flappy-bird-assets/audio");
     this.load.audio("wing", ["wing.ogg", "wing.wav"]);

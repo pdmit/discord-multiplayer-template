@@ -15,6 +15,26 @@ export class Boot extends Scene {
   }
 
   create() {
-    this.scene.start("Preloader");
+    // Wait for fonts to load before proceeding
+    this.loadWebFonts().then(() => {
+      this.scene.start("Preloader");
+    });
+  }
+
+  private async loadWebFonts(): Promise<void> {
+    // Use the CSS Font Loading API to ensure fonts are ready
+    if ('fonts' in document) {
+      try {
+        await Promise.all([
+          document.fonts.load('16px "Jersey 10"'),
+          document.fonts.load('16px "Nunito"')
+        ]);
+        console.log('Fonts loaded successfully');
+      } catch (error) {
+        console.warn('Font loading failed, using fallback:', error);
+      }
+    }
+    // Small delay to ensure fonts are fully rendered
+    return new Promise(resolve => setTimeout(resolve, 100));
   }
 }

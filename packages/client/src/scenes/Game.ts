@@ -2,6 +2,10 @@ import { Scene } from "phaser";
 import { Room, Client, getStateCallbacks } from "colyseus.js";
 import { discordSdk, getUserName } from "../utils/discordSDK";
 
+// Font constants for consistent styling across the game
+const FONT_PRIMARY = '"Jersey 10", "Arial Black", sans-serif';  // For headers, buttons, important text
+const FONT_SECONDARY = '"Nunito", "Arial", sans-serif';   // For body text, stats, secondary info
+
 type PlayerState = {
   name: string;
   skin: string;
@@ -179,6 +183,14 @@ export class Game extends Scene {
   // Power-ups
   private powerUpSprites = new Map<number, { img: Phaser.GameObjects.Image; targetX: number; targetY: number }>();
 
+  // Player status panel
+  private playerStatusPanel?: Phaser.GameObjects.Container;
+  private playerStatusElements = new Map<string, {
+    container: Phaser.GameObjects.Container;
+    orb: Phaser.GameObjects.Image;
+    nameText: Phaser.GameObjects.Text;
+  }>();
+
   constructor() {
     super("Game");
 
@@ -278,6 +290,9 @@ export class Game extends Scene {
     this.updateGmChargeUi();
     // Update GM cursor position
     this.updateGmCursor();
+
+    // Update player status panel
+    this.updatePlayerStatusPanel();
 
     // Periodic sync for ready state changes and running state
     if (this.room && this.room.state && this.room.state.players) {
@@ -448,7 +463,7 @@ export class Game extends Scene {
 
     // Add chevrons for extra flair
     const leftChevrons = this.add.text(-180, 0, ">>", {
-      fontFamily: "Arial Black",
+      fontFamily: FONT_PRIMARY,
       fontSize: 32,
       color: '#ff8c00ff',
       stroke: '#000000',
@@ -456,7 +471,7 @@ export class Game extends Scene {
     }).setOrigin(0.5);
 
     const rightChevrons = this.add.text(180, 0, "<<", {
-      fontFamily: "Arial Black",
+      fontFamily: FONT_PRIMARY,
       fontSize: 32,
       color: '#ff8c00ff',
       stroke: '#000000',
@@ -466,12 +481,12 @@ export class Game extends Scene {
     // Add text with dynamic styling - smaller font
     const text = this.add.text(0, 0,
       `STAGE ${stage}! SPEED +${Math.round(stage * 20)}%`, {
-      fontFamily: "Arial Black",
+      fontFamily: FONT_PRIMARY,
       fontSize: 32,
       color: '#ff8c00ff',
       align: 'center',
       stroke: '#000000',
-      strokeThickness: 6
+      strokeThickness: 4
     }).setOrigin(0.5);
 
     // Add items to container
@@ -533,15 +548,16 @@ export class Game extends Scene {
     // Create score text first so we can size the backdrop to match
     this.scoreText = this.add
       .text(width / 2, 40, "Connecting...", {
-        fontFamily: "Arial Black",
+        fontFamily: FONT_PRIMARY,
         fontSize: 30,
         color: "#ffffff",
         stroke: "#000000",
-        strokeThickness: 8,
+        strokeThickness: 6,
         align: "center",
       })
       .setOrigin(0.5)
-      .setDepth(11);
+      .setDepth(11)
+      .setVisible(false); // Hide the score text
 
     const padding = 40;  // Horizontal padding for the backdrop
     this.scoreBackdrop = this.add
@@ -554,15 +570,16 @@ export class Game extends Scene {
         0.35
       )
       .setOrigin(0.5)
-      .setDepth(10);
+      .setDepth(10)
+      .setVisible(false); // Hide the score backdrop
 
     this.statusText = this.add
       .text(width / 2, 120, "Waiting for players...", {
-        fontFamily: "Arial",
+        fontFamily: FONT_SECONDARY,
         fontSize: 26,
         color: "#ffffff",
         stroke: "#000000",
-        strokeThickness: 6,
+        strokeThickness: 4,
         align: "center",
       })
       .setOrigin(0.5)
@@ -570,11 +587,11 @@ export class Game extends Scene {
 
     this.readyCountText = this.add
       .text(width / 2, height - 250, "DEBUG: Ready count text created", {
-        fontFamily: "Arial",
+        fontFamily: FONT_SECONDARY,
         fontSize: 22,
         color: "#ffffff",
         stroke: "#000000",
-        strokeThickness: 4,
+        strokeThickness: 3,
         align: "center",
       })
       .setOrigin(0.5)
@@ -592,11 +609,11 @@ export class Game extends Scene {
 
     this.readyButtonLabel = this.add
       .text(width / 2, buttonY, "Ready Up", {
-        fontFamily: "Arial Black",
+        fontFamily: FONT_PRIMARY,
         fontSize: 28,
         color: "#ffffff",
         stroke: "#000000",
-        strokeThickness: 6,
+        strokeThickness: 4,
         align: "center",
       })
       .setOrigin(0.5)
@@ -628,7 +645,8 @@ export class Game extends Scene {
 
     this.add
       .text(width / 2, height - 30, `Connected as: ${getUserName()}`, {
-        font: "18px Arial",
+        fontFamily: FONT_SECONDARY,
+        fontSize: 18,
         color: "#ffffff",
         stroke: "#000000",
         strokeThickness: 4,
@@ -712,7 +730,8 @@ export class Game extends Scene {
     // Add volume label
     this.volumeText = this.add
       .text(width - 80, sliderY - 20, `Volume ${Math.round(this.currentVolume * 100)}%`, {
-        font: "16px Arial",
+        fontFamily: FONT_SECONDARY,
+        fontSize: 16,
         color: "#ffffff",
         stroke: "#000000",
         strokeThickness: 3,
@@ -725,7 +744,7 @@ export class Game extends Scene {
     if (this.showDebugInfo) {
       this.roomStatusText = this.add
         .text(100, 600, "Room Status", {
-          fontFamily: "Arial Black",
+          fontFamily: FONT_PRIMARY,
           fontSize: 26,
           color: "#ff0000",
           stroke: "#000000",
@@ -750,6 +769,9 @@ export class Game extends Scene {
 
     // Create Pig King health bar (top-right)
     this.createPigHealthUI();
+
+    // Create player status panel (top-left)
+    this.createPlayerStatusPanel();
   }
 
   private updateSkinOptionsFromState() {
@@ -851,11 +873,11 @@ export class Game extends Scene {
     const panelTop = -panelHeight / 2;
     const title = this.add
       .text(0, panelTop + 28, "Choose Your Bird", {
-        fontFamily: "Arial Black",
+        fontFamily: FONT_PRIMARY,
         fontSize: 22,
         color: "#ffffff",
         stroke: "#000000",
-        strokeThickness: 6,
+        strokeThickness: 4,
         align: "center",
       })
       .setOrigin(0.5);
@@ -863,11 +885,11 @@ export class Game extends Scene {
 
     const subtitle = this.add
       .text(0, panelTop + 56, "Each skin can only be used once", {
-        fontFamily: "Arial",
+        fontFamily: FONT_SECONDARY,
         fontSize: 16,
         color: "#dddddd",
         stroke: "#000000",
-        strokeThickness: 4,
+        strokeThickness: 3,
         align: "center",
       })
       .setOrigin(0.5);
@@ -894,7 +916,7 @@ export class Game extends Scene {
 
       const label = this.add
         .text(0, slotHeight / 2 - 32, this.formatSkinLabel(skin), {
-          fontFamily: "Arial Black",
+          fontFamily: FONT_PRIMARY,
           fontSize: 16,
           color: "#ffffff",
           stroke: "#000000",
@@ -905,7 +927,7 @@ export class Game extends Scene {
 
       const ownerText = this.add
         .text(0, slotHeight / 2 - 10, "", {
-          fontFamily: "Arial",
+          fontFamily: FONT_SECONDARY,
           fontSize: 15,
           color: "#c0ffc0",
           stroke: "#000000",
@@ -1082,11 +1104,11 @@ export class Game extends Scene {
 
     // Game over text
     this.gameOverText = this.add.text(0, -100, "GAME OVER", {
-      fontFamily: "Arial Black",
+      fontFamily: FONT_PRIMARY,
       fontSize: 48,
       color: "#ff0000",
       stroke: "#000000",
-      strokeThickness: 8,
+      strokeThickness: 6,
       align: "center",
     });
     this.gameOverText.setOrigin(0.5);
@@ -1094,31 +1116,31 @@ export class Game extends Scene {
 
     // Score and summary displays
     this.gameOverScoreText = this.add.text(0, -40, "Score: 0", {
-      fontFamily: "Arial",
+      fontFamily: FONT_SECONDARY,
       fontSize: 30,
       color: "#ffffff",
       stroke: "#000000",
-      strokeThickness: 6,
+      strokeThickness: 4,
       align: "center",
     }).setOrigin(0.5);
     this.gameOverPanel.add(this.gameOverScoreText);
 
     this.gameOverHighText = this.add.text(0, -4, "High: 0", {
-      fontFamily: "Arial",
+      fontFamily: FONT_SECONDARY,
       fontSize: 24,
       color: "#ffffcc",
       stroke: "#000000",
-      strokeThickness: 5,
+      strokeThickness: 4,
       align: "center",
     }).setOrigin(0.5);
     this.gameOverPanel.add(this.gameOverHighText);
 
     this.gameOverTeamsText = this.add.text(0, 28, "Bird wins: 0 | Pig wins: 0", {
-      fontFamily: "Arial",
+      fontFamily: FONT_SECONDARY,
       fontSize: 22,
       color: "#cfe9ff",
       stroke: "#000000",
-      strokeThickness: 4,
+      strokeThickness: 3,
       align: "center",
     }).setOrigin(0.5);
     this.gameOverPanel.add(this.gameOverTeamsText);
@@ -1141,7 +1163,7 @@ export class Game extends Scene {
     this.gameOverPanel.add(this.restartButton);
 
     this.restartButtonLabel = this.add.text(0, playAgainY, "Play Again", {
-      fontFamily: "Arial Black",
+      fontFamily: FONT_PRIMARY,
       fontSize: 24,
       color: "#ffffff",
       stroke: "#000000",
@@ -1166,7 +1188,7 @@ export class Game extends Scene {
     this.gameOverPanel.add(this.returnButton);
 
     this.returnButtonLabel = this.add.text(0, returnY, "Return to Menu", {
-      fontFamily: "Arial Black",
+      fontFamily: FONT_PRIMARY,
       fontSize: 24,
       color: "#ffffff",
       stroke: "#000000",
@@ -1507,7 +1529,7 @@ export class Game extends Scene {
     container.add(bg);
 
     const title = this.add.text(0, -panelHeight / 2 + 18, "GM Tools", {
-      fontFamily: "Arial Black",
+      fontFamily: FONT_PRIMARY,
       fontSize: 18,
       color: "#ffffff",
       stroke: "#000000",
@@ -1519,7 +1541,7 @@ export class Game extends Scene {
     const makeBtn = (by: number, label: string, color: number, kind: "top" | "bottom") => {
       const btn = this.add.rectangle(0, by, panelWidth - 20, 44, color, 0.9).setOrigin(0.5).setInteractive({ useHandCursor: true });
       const txt = this.add.text(0, by, label, {
-        fontFamily: "Arial Black",
+        fontFamily: FONT_PRIMARY,
         fontSize: 18,
         color: "#ffffff",
         stroke: "#000000",
@@ -1539,7 +1561,7 @@ export class Game extends Scene {
 
     // Charges / cooldown label
     this.gmChargeText = this.add.text(0, 80, "Charges: 2/2 • Ready", {
-      fontFamily: "Arial Black",
+      fontFamily: FONT_PRIMARY,
       fontSize: 16,
       color: "#ffffff",
       stroke: "#000000",
@@ -2154,6 +2176,15 @@ export class Game extends Scene {
     try { this.pigBarBg?.destroy(); } catch { /* noop */ } this.pigBarBg = undefined;
     try { this.pigBarContainer?.destroy(true); } catch { /* noop */ } this.pigBarContainer = undefined;
 
+    // Player status panel
+    try {
+      this.playerStatusElements.forEach((element) => {
+        try { element.container.destroy(true); } catch { /* noop */ }
+      });
+      this.playerStatusElements.clear();
+    } catch { /* noop */ }
+    try { this.playerStatusPanel?.destroy(true); } catch { /* noop */ } this.playerStatusPanel = undefined;
+
     // Skin selection UI
     try { this.skinSelectionContainer?.destroy(true); } catch { /* noop */ } this.skinSelectionContainer = undefined;
     this.skinSlotElements.clear();
@@ -2450,7 +2481,7 @@ export class Game extends Scene {
     // Label above bar, aligned with bar left
     const label = this.add
       .text(barLeftX, contentTopY + 2, "Pig King 👑", {
-        fontFamily: "Arial Black",
+        fontFamily: FONT_PRIMARY,
         fontSize: 16,
         color: "#ffd369",
         stroke: "#000000",
@@ -2473,7 +2504,7 @@ export class Game extends Scene {
     // HP text now sits to the right of the bar to avoid overlapping
     const text = this.add
       .text(panelRightX - padRight, barY, "--/--", {
-        fontFamily: "Arial Black",
+        fontFamily: FONT_PRIMARY,
         fontSize: 14,
         color: "#ffffff",
         stroke: "#000000",
@@ -2518,6 +2549,130 @@ export class Game extends Scene {
       this.flashPigHealthBar();
     }
     this.lastPigHealth = h;
+  }
+
+  private createPlayerStatusPanel() {
+    const margin = 20;
+    const panelY = 120;
+
+    // Create container for the player status panel
+    this.playerStatusPanel = this.add.container(margin, panelY);
+    this.playerStatusPanel.setDepth(15);
+
+    // Panel background (will be sized dynamically)
+    const panelBg = this.add.rectangle(0, 0, 250, 100, 0x000000, 0.6)
+      .setOrigin(0, 0)
+      .setStrokeStyle(2, 0xffffff, 0.3);
+    this.playerStatusPanel.add(panelBg);
+
+    // Title
+    const title = this.add.text(125, 15, "Players", {
+      fontFamily: FONT_PRIMARY,
+      fontSize: 18,
+      color: "#ffffff",
+      stroke: "#000000",
+      strokeThickness: 4,
+      align: "center",
+    }).setOrigin(0.5, 0);
+    this.playerStatusPanel.add(title);
+
+    // Player list will be added dynamically
+  }
+
+  private updatePlayerStatusPanel() {
+    if (!this.playerStatusPanel || !this.room?.state?.players) {
+      return;
+    }
+
+    const margin = 20;
+    const lineHeight = 22; // Reduced from 30 to fit more players
+    const orbSize = 14;    // Slightly smaller orb
+    const startY = 40;     // Reduced from 45 to bring content higher
+    const panelWidth = 250;
+
+    // Get all players sorted by session ID for consistent ordering
+    const players = Array.from(this.room.state.players.entries() as IterableIterator<[string, PlayerState]>)
+      .sort((a, b) => a[0].localeCompare(b[0]));
+
+    // Remove status elements for players that left
+    const currentPlayerIds = new Set(players.map(([id, _]) => id));
+    this.playerStatusElements.forEach((element, playerId) => {
+      if (!currentPlayerIds.has(playerId)) {
+        element.container.destroy();
+        this.playerStatusElements.delete(playerId);
+      }
+    });
+
+    // Update or create elements for each player
+    players.forEach(([sessionId, player], index) => {
+      let element = this.playerStatusElements.get(sessionId);
+
+      if (!element) {
+        // Create new player status element
+        const container = this.add.container(0, 0);
+        
+        // Position elements relative to their container (0,0), not absolute
+        const orb = this.add.image(margin + orbSize / 2, 0, "orb_green")
+          .setDisplaySize(orbSize, orbSize);
+        
+        const nameText = this.add.text(margin + orbSize + 10, 0, player.name, {
+          fontFamily: FONT_SECONDARY,
+          fontSize: 14,  // Reduced from 16 for more compact display
+          color: "#ffffff",
+          stroke: "#000000",
+          strokeThickness: 3,
+        }).setOrigin(0, 0.5);
+
+        container.add([orb, nameText]);
+        if (this.playerStatusPanel) {
+          this.playerStatusPanel.add(container);
+        }
+
+        element = { container, orb, nameText };
+        this.playerStatusElements.set(sessionId, element);
+      }
+
+      // Update container position (this moves everything inside it)
+      element.container.setPosition(0, startY + index * lineHeight);
+
+      // Check if player is GM
+      const isGM = player.role === "gm";
+
+      // Update name if changed, and apply bold font for GM
+      element.nameText.setText(player.name);
+      element.nameText.setFontFamily(isGM ? FONT_PRIMARY : FONT_SECONDARY);
+
+      // Update orb color based on ready state (GM is always green)
+      if (isGM || player.ready) {
+        // Green orb - ready or GM
+        element.orb.setTint(0x00ff00);
+        element.orb.setAlpha(1);
+      } else {
+        // Red orb - not ready
+        element.orb.setTint(0xff0000);
+        element.orb.setAlpha(1);
+      }
+
+      // Highlight local player in yellow, GM in orange, others in white
+      if (sessionId === this.localPlayerId) {
+        element.nameText.setColor("#ffff00");
+      } else if (isGM) {
+        element.nameText.setColor("#ffa500"); // Orange for GM
+      } else {
+        element.nameText.setColor("#ffffff");
+      }
+    });
+
+    // Update panel background size
+    const panelHeight = Math.max(100, startY + players.length * lineHeight + 15);
+    const panelBg = this.playerStatusPanel.list[0] as Phaser.GameObjects.Rectangle;
+    if (panelBg) {
+      panelBg.setSize(panelWidth, panelHeight);
+    }
+
+    // Hide panel if no players or if the game is running
+    const isRunning = (this.room?.state as any)?.running === true;
+    this.playerStatusPanel.setVisible(players.length > 0 && !isRunning);
   }
 
   // Schedule the UI health update so it lands when the thrown hammer hits
@@ -3136,11 +3291,11 @@ export class Game extends Scene {
 
     const bg = this.add.rectangle(0, 0, 480, 88, 0x000000, 0.6).setOrigin(0.5).setStrokeStyle(3, accent, 0.95);
     const title = this.add.text(0, 0, titleText, {
-      fontFamily: "Arial Black",
+      fontFamily: FONT_PRIMARY,
       fontSize: 34,
       color: "#ffffff",
       stroke: "#000000",
-      strokeThickness: 6,
+      strokeThickness: 4,
       align: "center",
     }).setOrigin(0.5);
 
@@ -3191,7 +3346,7 @@ export class Game extends Scene {
   private showPowerUpPickup(x: number, y: number, label: string, isLocal: boolean) {
     // Text popup
     const txt = this.add.text(x, y - 24, label || "Power Up!", {
-      fontFamily: "Arial Black",
+      fontFamily: FONT_PRIMARY,
       fontSize: 18,
       color: isLocal ? "#ffe7a6" : "#d2e0ff",
       stroke: "#000000",
@@ -3264,11 +3419,11 @@ export class Game extends Scene {
     const x = this.scoreText?.x ?? (Number(this.game.config.width) / 2);
     const y = (this.scoreText?.y ?? 40) - 10;
     const pop = this.add.text(x, y, `+${diff}`, {
-      fontFamily: 'Arial Black',
+      fontFamily: FONT_PRIMARY,
       fontSize: 24,
       color: '#ffd369',
       stroke: '#000000',
-      strokeThickness: 6,
+      strokeThickness: 4,
       align: 'center',
     }).setOrigin(0.5).setDepth(12);
     pop.setScale(0.8);
