@@ -1039,7 +1039,7 @@ export class GameRoom extends Room<GameState> {
       const end = Math.min(maxY, obs.y + this.pipeHeight + safety);
       if (start < end) {
         ranges.push([start, end]);
-        logger.debug(`Blocked range (obstacle): id=${obs.id}, obsX=${obs.x.toFixed(1)}, deltaX=${deltaX.toFixed(1)}, Y=[${start.toFixed(1)}, ${end.toFixed(1)}]`);
+        //logger.debug(`Blocked range (obstacle): id=${obs.id}, obsX=${obs.x.toFixed(1)}, deltaX=${deltaX.toFixed(1)}, Y=[${start.toFixed(1)}, ${end.toFixed(1)}]`);
       }
     }
 
