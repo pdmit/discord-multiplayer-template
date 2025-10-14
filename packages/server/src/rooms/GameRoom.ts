@@ -45,6 +45,8 @@ export class GameRoom extends Room<GameState> {
   private elapsedSincePipe = 0;
   private powerUpElapsed = 0; // seconds
   private obstacleDebugAccumulator = 0; // seconds
+  private cleanupAccumulator = 0; // seconds - for batching off-screen removals
+  private readonly cleanupIntervalSec = 0.5; // Clean up off-screen objects every 0.5s
   private gmCharges = new Map<string, { charges: number; lastRechargeAt: number }>();
   private numObstacleCharges = 3;
   private obstacleRechargeSeconds = 2;
@@ -244,6 +246,10 @@ export class GameRoom extends Room<GameState> {
   onJoin(client: Client, options?: any): void {
     logger.info(`Client joined: ${client.sessionId}`);
 
+    // CRITICAL: Clean up any undefined holes in arrays before sending state to new client
+    // This prevents "refId not found" errors during initial state sync
+    this.sanitizeArrays();
+
     const player = new PlayerState();
     player.name = options?.name || `Bird ${client.sessionId.slice(0, 4)}`;
     // Role requested by client; assign spectator if a round is running
@@ -431,10 +437,50 @@ export class GameRoom extends Room<GameState> {
     return null;
   }
 
-  private populateSkinOptions() {
-    while (this.state.skinOptions.length > 0) {
-      this.state.skinOptions.pop();
+  private sanitizeArrays() {
+    // Remove any undefined holes from arrays to prevent "refId not found" errors
+    // Use filter and rebuild to avoid splice() issues with Colyseus ArraySchema
+
+    // Filter pipes - rebuild array from scratch
+    const pipesBefore = this.state.pipes.length;
+    const validPipes = this.state.pipes.filter(p => p != null);
+    this.state.pipes.splice(0, this.state.pipes.length);
+    validPipes.forEach(p => this.state.pipes.push(p));
+    if (validPipes.length < pipesBefore) {
+      logger.warn(`Sanitized pipes: removed ${pipesBefore - validPipes.length} undefined elements`);
     }
+
+    // Filter placed obstacles
+    const obstaclesBefore = this.state.placedObstacles.length;
+    const validObstacles = this.state.placedObstacles.filter(o => o != null);
+    this.state.placedObstacles.splice(0, this.state.placedObstacles.length);
+    validObstacles.forEach(o => this.state.placedObstacles.push(o));
+    if (validObstacles.length < obstaclesBefore) {
+      logger.warn(`Sanitized obstacles: removed ${obstaclesBefore - validObstacles.length} undefined elements`);
+    }
+
+    // Filter power-ups
+    const powerUpsBefore = this.state.powerUps.length;
+    const validPowerUps = this.state.powerUps.filter(pu => pu != null);
+    this.state.powerUps.splice(0, this.state.powerUps.length);
+    validPowerUps.forEach(pu => this.state.powerUps.push(pu));
+    if (validPowerUps.length < powerUpsBefore) {
+      logger.warn(`Sanitized power-ups: removed ${powerUpsBefore - validPowerUps.length} undefined elements`);
+    }
+
+    // Filter skin options
+    const skinsBefore = this.state.skinOptions.length;
+    const validSkins = this.state.skinOptions.filter(s => s != null);
+    this.state.skinOptions.splice(0, this.state.skinOptions.length);
+    validSkins.forEach(s => this.state.skinOptions.push(s));
+    if (validSkins.length < skinsBefore) {
+      logger.warn(`Sanitized skins: removed ${skinsBefore - validSkins.length} undefined elements`);
+    }
+  }
+
+  private populateSkinOptions() {
+    // Clear existing options using splice to avoid undefined holes
+    this.state.skinOptions.splice(0, this.state.skinOptions.length);
 
     for (const skin of this.skins) {
       this.state.skinOptions.push(skin);
@@ -448,17 +494,13 @@ export class GameRoom extends Room<GameState> {
     const pipesBefore = this.state.pipes.length;
     const placedBefore = this.state.placedObstacles ? this.state.placedObstacles.length : 0;
     const powerUpsBefore = this.state.powerUps ? this.state.powerUps.length : 0;
-    // Remove pipes individually to ensure onRemove events fire consistently
-    while (this.state.pipes.length > 0) {
-      this.state.pipes.shift();
-    }
-    // Remove placed obstacles individually to ensure onRemove events fire
-    while (this.state.placedObstacles && this.state.placedObstacles.length > 0) {
-      this.state.placedObstacles.shift();
-    }
-    while ((this.state as any).powerUps && this.state.powerUps.length > 0) {
-      this.state.powerUps.shift();
-    }
+
+    // IMPORTANT: Use splice(0, length) instead of shift() to avoid creating undefined holes
+    // shift() in a loop can leave undefined elements in Colyseus ArraySchemas
+    this.state.pipes.splice(0, this.state.pipes.length);
+    this.state.placedObstacles.splice(0, this.state.placedObstacles.length);
+    this.state.powerUps.splice(0, this.state.powerUps.length);
+
     logger.info("clearLevel completed", { pipesBefore, placedBefore, powerUpsBefore, pipesAfter: this.state.pipes.length, placedAfter: this.state.placedObstacles.length, powerUpsAfter: this.state.powerUps.length });
   }
 
@@ -628,41 +670,23 @@ export class GameRoom extends Room<GameState> {
 
     const floorY = this.worldHeight - this.floorHeight;
 
-    // Important: remove expired pipes BEFORE mutating remaining ones
-    // (avoids sending property patches on a pipe in the same tick it is deleted)
-    //while (this.state.pipes.length > 0 && this.state.pipes[0].x < -this.pipeWidth) {
-    //const removed = this.state.pipes.shift();
-    //logger.info(`Pipe removed (pre-move): id=${removed?.id}, ref=${this.refIdOf(removed)}`);
-    //}
-
-    // Remove placed pipes that left the screen (unordered removals supported)
-    for (let i = this.state.pipes.length - 1; i >= 0; i -= 1) {
-      const obs = this.state.pipes[i];
-      if (obs.x < -this.pipeWidth) {
-        const removed = this.state.pipes.splice(i, 1)[0];
-        logger.info(`Pipe removed (pre-move): id=${removed?.id}`);
-      }
+    // FIRST: Move all objects (pipes, obstacles, power-ups)
+    // Moving objects before removing them prevents Colyseus from sending patches
+    // for objects that are deleted in the same tick (which causes "refId not found" errors)
+    for (const pipe of this.state.pipes) {
+      if (pipe) pipe.x -= this.pipeSpeed * delta;
     }
 
-    // Remove placed obstacles that left the screen (unordered removals supported)
-    for (let i = this.state.placedObstacles.length - 1; i >= 0; i -= 1) {
-      const obs = this.state.placedObstacles[i];
-      if (obs.x < -this.pipeWidth) {
-        const removed = this.state.placedObstacles.splice(i, 1)[0];
-        logger.info(`Placed obstacle removed (pre-move): id=${removed?.id}`);
-      }
+    for (const obs of this.state.placedObstacles) {
+      if (obs) obs.x -= this.pipeSpeed * delta;
     }
 
-    // Remove off-screen power-ups (unordered removals supported)
     for (let i = this.state.powerUps.length - 1; i >= 0; i -= 1) {
       const pu = this.state.powerUps[i];
-      if (pu.x < -this.pipeWidth) {
-        const removed = this.state.powerUps.splice(i, 1)[0];
-        logger.info(`PowerUp removed (off-screen): id=${removed?.id}, type=${(removed as any)?.type}`);
-      }
+      if (pu) pu.x = pu.x - (this.pipeSpeed * delta);
     }
 
-    // Player collision and movement update, GM recharge logic
+    // SECOND: Player collision and movement update, GM recharge logic
     const nowMs = Date.now();
     for (const [, player] of this.state.players) {
       if ((player as any).role === "spectator") {
@@ -735,6 +759,7 @@ export class GameRoom extends Room<GameState> {
       }
 
       for (const pipe of this.state.pipes) {
+        if (!pipe) continue; // Skip undefined elements
         const pipeLeft = pipe.x - this.pipeWidth / 2;
         const pipeRight = pipe.x + this.pipeWidth / 2;
         const gapTop = pipe.Ytop + this.pipeHeight; // Bottom of top pipe (start of gap)
@@ -773,6 +798,7 @@ export class GameRoom extends Room<GameState> {
 
       // Collide against GM-placed obstacles (simple AABB)
       for (const obs of this.state.placedObstacles) {
+        if (!obs) continue; // Skip undefined elements
         const obsLeft = obs.x - this.pipeWidth / 2;
         const obsRight = obs.x + this.pipeWidth / 2;
         const obsTop = obs.y;
@@ -805,6 +831,7 @@ export class GameRoom extends Room<GameState> {
       // Power-up pickup (circle collision around power-up center)
       for (let i = this.state.powerUps.length - 1; i >= 0; i -= 1) {
         const pu = this.state.powerUps[i];
+        if (!pu) continue; // Skip undefined elements
         const dx = this.birdX - pu.x;
         const dy = player.y - pu.y;
         if (dx * dx + dy * dy <= this.powerUpPickupRadius * this.powerUpPickupRadius) {
@@ -817,7 +844,7 @@ export class GameRoom extends Room<GameState> {
           if (pid) {
             this.broadcast("powerUpPicked", { playerId: pid, type: pu.type, name: pu.name, x: pu.x, y: pu.y });
           }
-          break; // one power-up per player per tick
+          break; // one power-up per ticket
         }
       }
 
@@ -842,22 +869,40 @@ export class GameRoom extends Room<GameState> {
       }
     }
 
-    for (const pipe of this.state.pipes) {
-      pipe.x -= this.pipeSpeed * delta;
+    // THIRD: Remove off-screen objects AFTER all movements and collisions
+    // Batched cleanup - only run periodically to avoid lag from filter+rebuild
+    //this.cleanupAccumulator += delta;
+    if (this.cleanupAccumulator >= this.cleanupIntervalSec) {
+      return;
+      this.cleanupAccumulator = 0;
+
+      // Only check/cleanup if first element is off-screen (objects move at same speed)
+      if (this.state.pipes.length > 0 && this.state.pipes[0] && this.state.pipes[0].x < -this.pipeWidth) {
+        const validPipes = this.state.pipes.filter(pipe => pipe && pipe.x >= -this.pipeWidth);
+        const removed = this.state.pipes.length - validPipes.length;
+        this.state.pipes.splice(0, this.state.pipes.length);
+        validPipes.forEach(p => this.state.pipes.push(p));
+        if (removed > 0) logger.info(`Removed ${removed} off-screen pipes`);
+      }
+
+      if (this.state.placedObstacles.length > 0 && this.state.placedObstacles[0] && this.state.placedObstacles[0].x < -this.pipeWidth) {
+        const validObstacles = this.state.placedObstacles.filter(obs => obs && obs.x >= -this.pipeWidth);
+        const removed = this.state.placedObstacles.length - validObstacles.length;
+        this.state.placedObstacles.splice(0, this.state.placedObstacles.length);
+        validObstacles.forEach(o => this.state.placedObstacles.push(o));
+        if (removed > 0) logger.info(`Removed ${removed} off-screen obstacles`);
+      }
+
+      if (this.state.powerUps.length > 0 && this.state.powerUps[0] && this.state.powerUps[0].x < -this.pipeWidth) {
+        const validPowerUps = this.state.powerUps.filter(pu => pu && pu.x >= -this.pipeWidth);
+        const removed = this.state.powerUps.length - validPowerUps.length;
+        this.state.powerUps.splice(0, this.state.powerUps.length);
+        validPowerUps.forEach(pu => this.state.powerUps.push(pu));
+        if (removed > 0) logger.info(`Removed ${removed} off-screen power-ups`);
+      }
     }
 
-    for (const obs of this.state.placedObstacles) {
-      obs.x -= this.pipeSpeed * delta;
-    }
-
-    // Move power-ups with the world
-    for (let i = this.state.powerUps.length - 1; i >= 0; i -= 1) {
-      const pu = this.state.powerUps[i];
-      pu.x = pu.x - (this.pipeSpeed * delta);
-    }
-
-    // Spawn new pipes AFTER removals and movements to avoid
-    // delete+patch ordering issues on the same tick.
+    // FOURTH: Spawn new objects (pipes, power-ups)
     if (this.elapsedSincePipe >= this.pipeInterval) {
       this.elapsedSincePipe = 0;
       this.spawnPipePair();
@@ -909,6 +954,8 @@ export class GameRoom extends Room<GameState> {
       for (const [, player] of this.state.players) {
         player.velocity = 0;
       }
+      logger.info("Game ended");
+      return; // Stop update loop after game ends
     }
 
     // If no players remain, stop the game
@@ -1004,6 +1051,7 @@ export class GameRoom extends Room<GameState> {
 
     // Only check pipes that are horizontally close enough to matter
     for (const pipe of this.state.pipes) {
+      if (!pipe) continue; // Skip undefined elements
       const deltaX = Math.abs(x - pipe.x);
 
       // Skip pipes that are too far away horizontally - they'll never collide with this power-up
@@ -1029,6 +1077,7 @@ export class GameRoom extends Room<GameState> {
 
     // GM-placed obstacles - only check nearby ones
     for (const obs of this.state.placedObstacles) {
+      if (!obs) continue; // Skip undefined elements
       const deltaX = Math.abs(x - obs.x);
 
       if (deltaX > maxDeltaX) {

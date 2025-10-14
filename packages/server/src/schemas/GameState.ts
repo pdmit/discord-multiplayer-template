@@ -145,23 +145,23 @@ export class GameState extends Schema {
 
   // Optional convenience field to track who is GM (empty if none)
   @type("string")
-  gameMasterId: string = "";
+  gameMasterId = "";
 
   // Global Game Master (Pig King) health shared with all clients
   @type(PigKingState)
-  pigKing: PigKingState = new PigKingState();
+  pigKing = new PigKingState();
 
   // Team win counters (persist across rounds for room lifetime)
   @type("number")
-  birdWins: number = 0; // times birds (players) defeated Pig King
+  birdWins = 0; // times birds (players) defeated Pig King
 
   @type("number")
-  pigWins: number = 0; // times Pig King (GM) won by eliminating birds
+  pigWins = 0; // times Pig King (GM) won by eliminating birds
 
   // GM cursor position for displaying to all players
   @type("number")
-  gmCursorX: number = 0;
+  gmCursorX = 0;
 
   @type("number")
-  gmCursorY: number = 0;
+  gmCursorY = 0;
 }
