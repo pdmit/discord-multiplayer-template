@@ -47,10 +47,26 @@ export class MainMenu extends Scene {
       color: number,
       onClick: () => void,
     ) => {
+      // Create 3D shadow layer (darker, offset down and right)
+      const shadowColor = Phaser.Display.Color.IntegerToColor(color).darken(40).color;
+      const shadow = this.add
+        .rectangle(centerX + 4, y + 4, buttonWidth, buttonHeight, shadowColor, 0.6)
+        .setOrigin(0.5);
+
+      // Create main button with border for depth
       const bg = this.add
-        .rectangle(centerX, y, buttonWidth, buttonHeight, color, 0.9)
+        .rectangle(centerX, y, buttonWidth, buttonHeight, color, 1)
         .setOrigin(0.5)
+        .setStrokeStyle(4, 0xffffff, 0.3)
         .setInteractive({ useHandCursor: true });
+
+      // Add inner border for more depth
+      const innerBorder = this.add
+        .rectangle(centerX, y - 2, buttonWidth - 8, buttonHeight - 8)
+        .setOrigin(0.5)
+        .setStrokeStyle(2, Phaser.Display.Color.IntegerToColor(color).lighten(20).color, 0.5)
+        .setFillStyle(0x000000, 0); // Transparent fill
+
       const text = this.add.text(centerX, y, label, {
         fontFamily: FONT_PRIMARY,
         fontSize: 26,
@@ -60,9 +76,27 @@ export class MainMenu extends Scene {
         align: "center",
       }).setOrigin(0.5);
 
-      bg.on("pointerdown", async () => { await authorizeDiscordUser(); onClick(); });
-      bg.on("pointerover", () => bg.setFillStyle(Phaser.Display.Color.IntegerToColor(color).color, 0.95));
-      bg.on("pointerout", () => bg.setFillStyle(color, 0.9));
+      bg.on("pointerdown", async () => { 
+        // Press effect: move down slightly
+        bg.y += 3;
+        shadow.y += 3;
+        innerBorder.y += 3;
+        text.y += 3;
+        await authorizeDiscordUser(); 
+        onClick(); 
+      });
+      bg.on("pointerover", () => {
+        const lightColor = Phaser.Display.Color.IntegerToColor(color).lighten(15).color;
+        bg.setFillStyle(lightColor, 1);
+      });
+      bg.on("pointerout", () => {
+        bg.setFillStyle(color, 1);
+        // Reset position in case it was pressed
+        bg.y = y;
+        shadow.y = y + 4;
+        innerBorder.y = y - 2;
+        text.y = y;
+      });
     };
 
     // Play as Bird button

@@ -313,7 +313,7 @@ export class GameRoom extends Room<GameState> {
       }
 
       const kind = (message?.kind ?? "").toString();
-      if (kind !== "top" && kind !== "bottom") {
+      if (kind !== "top" && kind !== "bottom" && kind !== "pair") {
         logger.warn(`gmPlaceObstacle rejected - invalid kind: ${kind}`);
         return;
       }
@@ -331,37 +331,71 @@ export class GameRoom extends Room<GameState> {
       const rightThirdMaxX = this.worldWidth;
       const clampedX = Math.max(rightThirdMinX, Math.min(rightThirdMaxX, x));
 
-      // 2/3/4) Vertical ranges with modifier = getCurrentPipeGap()/2
-      // Allow sprites to extend off-screen except:
-      //  - bottom of TOP pipe cannot be above top of screen -> (topY + pipeHeight) >= 0
-      //  - top of BOTTOM pipe cannot be below bottom of screen -> (topY) <= worldHeight
-      const midY = this.worldHeight / 2;
-      //const halfGap = this.getCurrentPipeGap() / 2;
-      const halfGap = 0;
-
-      let clampedY = y;
-      if (kind === "bottom") {
-        // Top of bottom pipe must be within [midY + halfGap, worldHeight]
-        const topMin = midY + halfGap;
-        const topMax = this.worldHeight;
-        clampedY = Math.max(topMin, Math.min(topMax, y));
+      if (kind === "pair") {
+        // For pipe pairs, y represents the vertical center point
+        // Use current gap to determine pipe positions
+        const gap = this.getCurrentPipeGap();
+        const halfGap = gap / 2;
+        
+        // Clamp the center point to ensure both pipes fit on screen
+        const floorY = this.worldHeight - this.floorHeight;
+        const topMargin = 40;
+        const bottomMargin = 40;
+        
+        // Calculate min/max center positions - only need to ensure gap edges stay visible
+        // Top edge of gap: centerY - halfGap should be > topMargin
+        // Bottom edge of gap: centerY + halfGap should be < floorY - bottomMargin
+        const minCenter = topMargin + halfGap;
+        const maxCenter = floorY - bottomMargin - halfGap;
+        const clampedCenter = Math.max(minCenter, Math.min(maxCenter, y));
+        
+        // Create top pipe
+        const topObs = new PlacedObstacleState();
+        topObs.id = this.nextPlacedObstacleId++;
+        topObs.x = clampedX;
+        topObs.y = clampedCenter - halfGap - this.pipeHeight; // Top pipe's top Y
+        topObs.kind = "top";
+        this.state.placedObstacles.push(topObs);
+        
+        // Create bottom pipe
+        const bottomObs = new PlacedObstacleState();
+        bottomObs.id = this.nextPlacedObstacleId++;
+        bottomObs.x = clampedX;
+        bottomObs.y = clampedCenter + halfGap; // Bottom pipe's top Y
+        bottomObs.kind = "bottom";
+        this.state.placedObstacles.push(bottomObs);
+        
+        logger.info(`GM placed pipe pair: topId=${topObs.id}, bottomId=${bottomObs.id}, x=${clampedX}, center=${clampedCenter.toFixed(1)}, gap=${gap.toFixed(1)}`);
+        logger.debug("placedObstacles length after pair add", { count: this.state.placedObstacles.length });
       } else {
-        // Clamp bottom of TOP pipe to [0, midY - halfGap], then derive topY = bottom - pipeHeight
-        const desiredBottom = y + this.pipeHeight;
-        const bottomMin = 0;
-        const bottomMax = Math.max(bottomMin, midY - halfGap);
-        const clampedBottom = Math.max(bottomMin, Math.min(bottomMax, desiredBottom));
-        clampedY = clampedBottom - this.pipeHeight;
-      }
+        // Original single pipe logic
+        const midY = this.worldHeight / 2;
+        const halfGap = this.getCurrentPipeGap() / 2;
 
-      const obs = new PlacedObstacleState();
-      obs.id = this.nextPlacedObstacleId++;
-      obs.x = clampedX;
-      obs.y = clampedY;
-      obs.kind = kind;
-      this.state.placedObstacles.push(obs);
-      logger.info(`GM placed obstacle: id=${obs.id}, kind=${kind}, x=${obs.x}, y=${obs.y}`);
-      logger.debug("placedObstacles length after add", { count: this.state.placedObstacles.length });
+        let clampedY = y;
+        if (kind === "bottom") {
+          // Top of bottom pipe must be within [midY + halfGap, worldHeight]
+          const topMin = midY + halfGap;
+          const topMax = this.worldHeight;
+          clampedY = Math.max(topMin, Math.min(topMax, y));
+        } else {
+          // Clamp bottom of TOP pipe to [0, midY - halfGap], then derive topY = bottom - pipeHeight
+          const desiredBottom = y + this.pipeHeight;
+          const bottomMin = 0;
+          const bottomMax = Math.max(bottomMin, midY - halfGap);
+          const clampedBottom = Math.max(bottomMin, Math.min(bottomMax, desiredBottom));
+          clampedY = clampedBottom - this.pipeHeight;
+        }
+
+        const obs = new PlacedObstacleState();
+        obs.id = this.nextPlacedObstacleId++;
+        obs.x = clampedX;
+        obs.y = clampedY;
+        obs.kind = kind;
+        this.state.placedObstacles.push(obs);
+        logger.info(`GM placed obstacle: id=${obs.id}, kind=${kind}, x=${obs.x}, y=${obs.y}`);
+        logger.debug("placedObstacles length after add", { count: this.state.placedObstacles.length });
+      }
 
       // Spend charge and reset recharge timer
       entry.charges = Math.max(0, entry.charges - 1);
@@ -617,9 +651,9 @@ export class GameRoom extends Room<GameState> {
     pipe.Ytop = pipeCenter - gap / 2 - this.pipeHeight;  // top pipe's top Y
 
     this.state.pipes.push(pipe);
-    logger.info(
-      `Pipe created: id=${pipe.id}, ref=${this.refIdOf(pipe)}, x=${pipe.x}, Ytop=${pipe.Ytop}, Ybottom=${pipe.Ybottom}, gap=${gap}, diff=${this.state.difficulty.toFixed(2)}, total pipes=${this.state.pipes.length}`
-    );
+    // logger.info(
+    //   `Pipe created: id=${pipe.id}, ref=${this.refIdOf(pipe)}, x=${pipe.x}, Ytop=${pipe.Ytop}, Ybottom=${pipe.Ybottom}, gap=${gap}, diff=${this.state.difficulty.toFixed(2)}, total pipes=${this.state.pipes.length}`
+    // );
   }
 
   private killPlayer(player: PlayerState, reason: string) {
@@ -913,12 +947,12 @@ export class GameRoom extends Room<GameState> {
     if (this.obstacleDebugAccumulator >= 0.5) {
       this.obstacleDebugAccumulator = 0;
       const snapshot = this.state.placedObstacles.slice(0, 3).map((o) => ({ id: o.id, x: Number(o.x.toFixed?.(1) ?? o.x), y: o.y, kind: o.kind }));
-      logger.debug("Obstacles tick", {
-        running: this.state.running,
-        speed: this.pipeSpeed,
-        count: this.state.placedObstacles.length,
-        sample: snapshot,
-      });
+      // logger.debug("Obstacles tick", {
+      //   running: this.state.running,
+      //   speed: this.pipeSpeed,
+      //   count: this.state.placedObstacles.length,
+      //   sample: snapshot,
+      // });
     }
 
     const alivePlayers = Array.from(this.state.players.values()).filter((player: any) => player.alive && player.role === "bird");

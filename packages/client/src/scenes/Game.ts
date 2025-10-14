@@ -87,6 +87,8 @@ export class Game extends Scene {
   private scorePulseTween?: Phaser.Tweens.Tween;
   private readyCountText!: Phaser.GameObjects.Text;
   private readyButtonBackground?: Phaser.GameObjects.Rectangle;
+  private readyButtonShadow?: Phaser.GameObjects.Rectangle;
+  private readyButtonBorder?: Phaser.GameObjects.Rectangle;
   private readyButtonLabel?: Phaser.GameObjects.Text;
   private gameOverScreen?: Phaser.GameObjects.Container;
   private gameOverText?: Phaser.GameObjects.Text;
@@ -103,8 +105,12 @@ export class Game extends Scene {
   private statusIntroHold?: Phaser.Time.TimerEvent;
   private isStatusIntroActive: boolean = false;
   private restartButton?: Phaser.GameObjects.Rectangle;
+  private restartButtonShadow?: Phaser.GameObjects.Rectangle;
+  private restartButtonBorder?: Phaser.GameObjects.Rectangle;
   private restartButtonLabel?: Phaser.GameObjects.Text;
   private returnButton?: Phaser.GameObjects.Rectangle;
+  private returnButtonShadow?: Phaser.GameObjects.Rectangle;
+  private returnButtonBorder?: Phaser.GameObjects.Rectangle;
   private returnButtonLabel?: Phaser.GameObjects.Text;
   private localPlayerId = "";
   private localPlayerReady = false;
@@ -137,9 +143,10 @@ export class Game extends Scene {
 
   // GM tools and preview
   private gmToolbar?: Phaser.GameObjects.Container;
-  private gmToolSelected: ("top" | "bottom") | null = null;
+  private gmToolSelected: ("top" | "bottom" | "pair") | null = null;
   private gmPreviewSprite?: Phaser.GameObjects.Image;
-  private gmToolButtons: Map<"top" | "bottom", { bg: Phaser.GameObjects.Rectangle; txt: Phaser.GameObjects.Text }> = new Map();
+  private gmPreviewSpriteBottom?: Phaser.GameObjects.Image; // Second sprite for pipe pair preview
+  private gmToolButtons: Map<"top" | "bottom" | "pair", { bg: Phaser.GameObjects.Rectangle; txt: Phaser.GameObjects.Text }> = new Map();
   private gmCharges: number = 2;
   private gmMaxCharges: number = 2;
   private gmNextReadyAt: number = 0;
@@ -547,31 +554,31 @@ export class Game extends Scene {
 
     // Create score text first so we can size the backdrop to match
     this.scoreText = this.add
-      .text(width / 2, 40, "Connecting...", {
+      .text(width / 2, 50, "0", {
         fontFamily: FONT_PRIMARY,
-        fontSize: 30,
+        fontSize: 48,
         color: "#ffffff",
         stroke: "#000000",
-        strokeThickness: 6,
+        strokeThickness: 8,
         align: "center",
       })
       .setOrigin(0.5)
       .setDepth(11)
-      .setVisible(false); // Hide the score text
+      .setVisible(false); // Initially hidden, shown when game starts
 
-    const padding = 40;  // Horizontal padding for the backdrop
+    // Backdrop removed - no background for cleaner look
     this.scoreBackdrop = this.add
       .rectangle(
         this.scoreText.x,
         this.scoreText.y,
-        this.scoreText.width + padding,
-        70,
+        this.scoreText.width,
+        80,
         0x000000,
-        0.35
+        0
       )
       .setOrigin(0.5)
       .setDepth(10)
-      .setVisible(false); // Hide the score backdrop
+      .setVisible(false); // Keep invisible
 
     this.statusText = this.add
       .text(width / 2, 120, "Waiting for players...", {
@@ -601,11 +608,30 @@ export class Game extends Scene {
     const buttonWidth = Math.min(320, width * 0.5);
     const buttonHeight = 64;
 
+    // Create 3D shadow layer
+    const shadowColor = Phaser.Display.Color.IntegerToColor(0x3498db).darken(40).color;
+    this.readyButtonShadow = this.add
+      .rectangle(width / 2 + 4, buttonY + 4, buttonWidth, buttonHeight, shadowColor, 0.6)
+      .setOrigin(0.5)
+      .setDepth(9)
+      .setVisible(false);
+
+    // Create main button with border for depth
     this.readyButtonBackground = this.add
-      .rectangle(width / 2, buttonY, buttonWidth, buttonHeight, 0x3498db, 0.85)
+      .rectangle(width / 2, buttonY, buttonWidth, buttonHeight, 0x3498db, 1)
       .setOrigin(0.5)
       .setDepth(10)
-      .setVisible(true); // Temporarily make visible for debugging
+      .setStrokeStyle(4, 0xffffff, 0.3)
+      .setVisible(false);
+
+    // Add inner border for more depth
+    this.readyButtonBorder = this.add
+      .rectangle(width / 2, buttonY - 2, buttonWidth - 8, buttonHeight - 8)
+      .setOrigin(0.5)
+      .setStrokeStyle(2, Phaser.Display.Color.IntegerToColor(0x3498db).lighten(20).color, 0.5)
+      .setFillStyle(0x000000, 0) // Transparent fill
+      .setDepth(10)
+      .setVisible(false);
 
     this.readyButtonLabel = this.add
       .text(width / 2, buttonY, "Ready Up", {
@@ -618,10 +644,12 @@ export class Game extends Scene {
       })
       .setOrigin(0.5)
       .setDepth(11)
-      .setVisible(true); // Temporarily make visible for debugging
+      .setVisible(false);
 
     console.log("Ready button elements created:", {
       background: !!this.readyButtonBackground,
+      shadow: !!this.readyButtonShadow,
+      border: !!this.readyButtonBorder,
       label: !!this.readyButtonLabel,
       countText: !!this.readyCountText
     });
@@ -629,17 +657,32 @@ export class Game extends Scene {
     this.readyButtonBackground
       .setInteractive({ useHandCursor: true })
       .on("pointerdown", () => {
+        // Press effect: move down slightly
+        const offset = 3;
+        this.readyButtonBackground!.y += offset;
+        this.readyButtonShadow!.y += offset;
+        this.readyButtonBorder!.y += offset;
+        this.readyButtonLabel!.y += offset;
         this.toggleReady();
       })
       .on("pointerover", () => {
         const button = this.readyButtonBackground;
         if (button?.visible) {
-          button.setFillStyle(this.localPlayerReady ? 0x27ae60 : 0x2980b9, this.localPlayerReady ? 0.95 : 0.9);
+          const baseColor = this.localPlayerReady ? 0x27ae60 : 0x3498db;
+          const lightColor = Phaser.Display.Color.IntegerToColor(baseColor).lighten(15).color;
+          button.setFillStyle(lightColor, 1);
         }
       })
       .on("pointerout", () => {
         if (this.readyButtonBackground?.visible) {
           this.updateReadyButtonStyle();
+          // Reset position
+          const { height } = this.cameras.main;
+          const buttonY = height - 200;
+          this.readyButtonBackground!.y = buttonY;
+          this.readyButtonShadow!.y = buttonY + 4;
+          this.readyButtonBorder!.y = buttonY - 2;
+          this.readyButtonLabel!.y = buttonY;
         }
       });
 
@@ -1150,17 +1193,44 @@ export class Game extends Scene {
     const buttonHeight = 60;
     const playAgainY = 100;
 
-    this.restartButton = this.add.rectangle(0, playAgainY, buttonWidth, buttonHeight, 0x27ae60, 0.9);
+    // Create shadow for restart button
+    const restartShadowColor = Phaser.Display.Color.IntegerToColor(0x27ae60).darken(40).color;
+    this.restartButtonShadow = this.add.rectangle(4, playAgainY + 4, buttonWidth, buttonHeight, restartShadowColor, 0.6);
+    this.restartButtonShadow.setOrigin(0.5);
+    this.gameOverPanel.add(this.restartButtonShadow);
+
+    this.restartButton = this.add.rectangle(0, playAgainY, buttonWidth, buttonHeight, 0x27ae60, 1);
     this.restartButton.setOrigin(0.5);
+    this.restartButton.setStrokeStyle(4, 0xffffff, 0.3);
     this.restartButton.setInteractive({ useHandCursor: true });
-    this.restartButton.on("pointerdown", () => this.restartGame());
+    this.restartButton.on("pointerdown", () => {
+      // Press effect
+      this.restartButton!.y += 3;
+      this.restartButtonShadow!.y += 3;
+      this.restartButtonBorder!.y += 3;
+      this.restartButtonLabel!.y += 3;
+      this.restartGame();
+    });
     this.restartButton.on("pointerover", () => {
-      this.restartButton?.setFillStyle(0x2ecc71, 0.95);
+      const lightColor = Phaser.Display.Color.IntegerToColor(0x27ae60).lighten(15).color;
+      this.restartButton?.setFillStyle(lightColor, 1);
     });
     this.restartButton.on("pointerout", () => {
-      this.restartButton?.setFillStyle(0x27ae60, 0.9);
+      this.restartButton?.setFillStyle(0x27ae60, 1);
+      // Reset position
+      this.restartButton!.y = playAgainY;
+      this.restartButtonShadow!.y = playAgainY + 4;
+      this.restartButtonBorder!.y = playAgainY - 2;
+      this.restartButtonLabel!.y = playAgainY;
     });
     this.gameOverPanel.add(this.restartButton);
+
+    // Inner border for restart button
+    this.restartButtonBorder = this.add.rectangle(0, playAgainY - 2, buttonWidth - 8, buttonHeight - 8);
+    this.restartButtonBorder.setOrigin(0.5);
+    this.restartButtonBorder.setStrokeStyle(2, Phaser.Display.Color.IntegerToColor(0x27ae60).lighten(20).color, 0.5);
+    this.restartButtonBorder.setFillStyle(0x000000, 0);
+    this.gameOverPanel.add(this.restartButtonBorder);
 
     this.restartButtonLabel = this.add.text(0, playAgainY, "Play Again", {
       fontFamily: FONT_PRIMARY,
@@ -1175,17 +1245,45 @@ export class Game extends Scene {
 
     // Return to Menu button
     const returnY = playAgainY + 75;
-    this.returnButton = this.add.rectangle(0, returnY, buttonWidth, buttonHeight, 0x8e44ad, 0.9);
+
+    // Create shadow for return button
+    const returnShadowColor = Phaser.Display.Color.IntegerToColor(0x8e44ad).darken(40).color;
+    this.returnButtonShadow = this.add.rectangle(4, returnY + 4, buttonWidth, buttonHeight, returnShadowColor, 0.6);
+    this.returnButtonShadow.setOrigin(0.5);
+    this.gameOverPanel.add(this.returnButtonShadow);
+
+    this.returnButton = this.add.rectangle(0, returnY, buttonWidth, buttonHeight, 0x8e44ad, 1);
     this.returnButton.setOrigin(0.5);
+    this.returnButton.setStrokeStyle(4, 0xffffff, 0.3);
     this.returnButton.setInteractive({ useHandCursor: true });
-    this.returnButton.on("pointerdown", () => this.returnToMenu());
+    this.returnButton.on("pointerdown", () => {
+      // Press effect
+      this.returnButton!.y += 3;
+      this.returnButtonShadow!.y += 3;
+      this.returnButtonBorder!.y += 3;
+      this.returnButtonLabel!.y += 3;
+      this.returnToMenu();
+    });
     this.returnButton.on("pointerover", () => {
-      this.returnButton?.setFillStyle(0x9b59b6, 0.95);
+      const lightColor = Phaser.Display.Color.IntegerToColor(0x8e44ad).lighten(15).color;
+      this.returnButton?.setFillStyle(lightColor, 1);
     });
     this.returnButton.on("pointerout", () => {
-      this.returnButton?.setFillStyle(0x8e44ad, 0.9);
+      this.returnButton?.setFillStyle(0x8e44ad, 1);
+      // Reset position
+      this.returnButton!.y = returnY;
+      this.returnButtonShadow!.y = returnY + 4;
+      this.returnButtonBorder!.y = returnY - 2;
+      this.returnButtonLabel!.y = returnY;
     });
     this.gameOverPanel.add(this.returnButton);
+
+    // Inner border for return button
+    this.returnButtonBorder = this.add.rectangle(0, returnY - 2, buttonWidth - 8, buttonHeight - 8);
+    this.returnButtonBorder.setOrigin(0.5);
+    this.returnButtonBorder.setStrokeStyle(2, Phaser.Display.Color.IntegerToColor(0x8e44ad).lighten(20).color, 0.5);
+    this.returnButtonBorder.setFillStyle(0x000000, 0);
+    this.gameOverPanel.add(this.returnButtonBorder);
 
     this.returnButtonLabel = this.add.text(0, returnY, "Return to Menu", {
       fontFamily: FONT_PRIMARY,
@@ -1472,8 +1570,19 @@ export class Game extends Scene {
     }
 
     const color = this.localPlayerReady ? 0x2ecc71 : 0x3498db;
-    const alpha = this.localPlayerReady ? 0.95 : 0.85;
-    this.readyButtonBackground.setFillStyle(color, alpha);
+    this.readyButtonBackground.setFillStyle(color, 1);
+    
+    // Update shadow color to match
+    if (this.readyButtonShadow) {
+      const shadowColor = Phaser.Display.Color.IntegerToColor(color).darken(40).color;
+      this.readyButtonShadow.setFillStyle(shadowColor, 0.6);
+    }
+    
+    // Update inner border color
+    if (this.readyButtonBorder) {
+      const borderColor = Phaser.Display.Color.IntegerToColor(color).lighten(20).color;
+      this.readyButtonBorder.setStrokeStyle(2, borderColor, 0.5);
+    }
   }
 
   private getPointerPosition(pointer: Phaser.Input.Pointer) {
@@ -1515,7 +1624,7 @@ export class Game extends Scene {
     const width = Number(this.game.config.width);
     const margin = 20;
     const panelWidth = 160;
-    const panelHeight = 200;
+    const panelHeight = 250; // Increased to fit 3 buttons
     const x = width - panelWidth / 2 - margin;
     const y = 360;
 
@@ -1538,8 +1647,25 @@ export class Game extends Scene {
     }).setOrigin(0.5);
     container.add(title);
 
-    const makeBtn = (by: number, label: string, color: number, kind: "top" | "bottom") => {
-      const btn = this.add.rectangle(0, by, panelWidth - 20, 44, color, 0.9).setOrigin(0.5).setInteractive({ useHandCursor: true });
+    const makeBtn = (by: number, label: string, color: number, kind: "top" | "bottom" | "pair") => {
+      // Shadow layer
+      const shadowColor = Phaser.Display.Color.IntegerToColor(color).darken(40).color;
+      const shadow = this.add.rectangle(2, by + 2, panelWidth - 20, 44, shadowColor, 0.6).setOrigin(0.5);
+      container.add(shadow);
+
+      // Main button with border
+      const btn = this.add.rectangle(0, by, panelWidth - 20, 44, color, 1)
+        .setOrigin(0.5)
+        .setStrokeStyle(3, 0xffffff, 0.3)
+        .setInteractive({ useHandCursor: true });
+
+      // Inner border
+      const innerBorder = this.add.rectangle(0, by - 1, panelWidth - 26, 38)
+        .setOrigin(0.5)
+        .setStrokeStyle(2, Phaser.Display.Color.IntegerToColor(color).lighten(20).color, 0.5)
+        .setFillStyle(0x000000, 0);
+      container.add(innerBorder);
+
       const txt = this.add.text(0, by, label, {
         fontFamily: FONT_PRIMARY,
         fontSize: 18,
@@ -1548,19 +1674,41 @@ export class Game extends Scene {
         strokeThickness: 4,
         align: "center",
       }).setOrigin(0.5);
-      btn.on("pointerdown", () => this.selectGmTool(kind));
-      btn.on("pointerover", () => btn.setFillStyle(color, 0.95));
-      btn.on("pointerout", () => btn.setFillStyle(color, 0.9));
+
+      btn.on("pointerdown", () => {
+        // Press effect
+        btn.y += 2;
+        shadow.y += 2;
+        innerBorder.y += 2;
+        txt.y += 2;
+        this.selectGmTool(kind);
+        // Reset position after a short delay
+        this.time.delayedCall(100, () => {
+          btn.y = by;
+          shadow.y = by + 2;
+          innerBorder.y = by - 1;
+          txt.y = by;
+        });
+      });
+      btn.on("pointerover", () => {
+        const lightColor = Phaser.Display.Color.IntegerToColor(color).lighten(15).color;
+        btn.setFillStyle(lightColor, 1);
+      });
+      btn.on("pointerout", () => {
+        btn.setFillStyle(color, 1);
+      });
+
       container.add(btn);
       container.add(txt);
       this.gmToolButtons.set(kind, { bg: btn, txt });
     };
 
-    makeBtn(-20, "Top Pipe", 0x34495e, "top");
-    makeBtn(30, "Bottom Pipe", 0x2c3e50, "bottom");
+    makeBtn(-40, "Top Pipe", 0x34495e, "top");
+    makeBtn(10, "Bottom Pipe", 0x2c3e50, "bottom");
+    makeBtn(60, "Pipe Pair", 0x16a085, "pair");
 
     // Charges / cooldown label
-    this.gmChargeText = this.add.text(0, 80, "Charges: 2/2 • Ready", {
+    this.gmChargeText = this.add.text(0, 110, "Charges: 2/2 • Ready", {
       fontFamily: FONT_PRIMARY,
       fontSize: 16,
       color: "#ffffff",
@@ -1664,23 +1812,54 @@ export class Game extends Scene {
     this.gmXClampTint?.setVisible(this.localPlayerIsGM === true);
   }
 
-  private selectGmTool(kind: ("top" | "bottom") | null) {
+  private selectGmTool(kind: ("top" | "bottom" | "pair") | null) {
     this.gmToolSelected = kind;
     if (!kind) {
       this.gmPreviewSprite?.destroy();
       this.gmPreviewSprite = undefined;
+      this.gmPreviewSpriteBottom?.destroy();
+      this.gmPreviewSpriteBottom = undefined;
       this.updateGmToolSelectionHighlight();
       return;
     }
-    const key = kind === "top" ? "pipe" : "pipe-red";
+    
+    // Choose texture based on tool type
+    let key: string;
+    if (kind === "pair") {
+      key = "pipe"; // Use default pipe texture for top pipe in pair
+    } else {
+      key = kind === "top" ? "pipe" : "pipe-red";
+    }
+    
+    // Create or update the primary preview sprite
     if (!this.gmPreviewSprite) {
       this.gmPreviewSprite = this.add.image(0, 0, key).setDepth(49).setAlpha(0.5);
     } else {
       this.gmPreviewSprite.setTexture(key);
       this.gmPreviewSprite.setVisible(true);
     }
-    this.gmPreviewSprite.setFlipY(kind === "top");
-    this.gmPreviewSprite.setOrigin(0.5, kind === "top" ? 1 : 0);
+    
+    // For pipe pairs, create a second preview sprite for the bottom pipe
+    if (kind === "pair") {
+      if (!this.gmPreviewSpriteBottom) {
+        this.gmPreviewSpriteBottom = this.add.image(0, 0, "pipe-red").setDepth(49).setAlpha(0.5);
+      } else {
+        this.gmPreviewSpriteBottom.setTexture("pipe-red");
+        this.gmPreviewSpriteBottom.setVisible(true);
+      }
+      // Top pipe setup (flipped)
+      this.gmPreviewSprite.setFlipY(true);
+      this.gmPreviewSprite.setOrigin(0.5, 1);
+      // Bottom pipe setup (normal)
+      this.gmPreviewSpriteBottom.setFlipY(false);
+      this.gmPreviewSpriteBottom.setOrigin(0.5, 0);
+    } else {
+      // Hide/destroy the second sprite when not using pair
+      this.gmPreviewSpriteBottom?.setVisible(false);
+      // Set orientation for single pipe
+      this.gmPreviewSprite.setFlipY(kind === "top");
+      this.gmPreviewSprite.setOrigin(0.5, kind === "top" ? 1 : 0);
+    }
     this.updateGmToolSelectionHighlight();
   }
 
@@ -1688,6 +1867,7 @@ export class Game extends Scene {
     // Highlight selected tool button by stroke + brighter fill
     const topBtn = this.gmToolButtons.get("top");
     const bottomBtn = this.gmToolButtons.get("bottom");
+    const pairBtn = this.gmToolButtons.get("pair");
     const apply = (entry: { bg: Phaser.GameObjects.Rectangle; txt: Phaser.GameObjects.Text } | undefined, selected: boolean, baseColor: number) => {
       if (!entry) return;
       entry.bg.setStrokeStyle(selected ? 3 : 1, 0xffd369, selected ? 0.9 : 0.4);
@@ -1696,6 +1876,7 @@ export class Game extends Scene {
     };
     apply(topBtn, this.gmToolSelected === "top", 0x34495e);
     apply(bottomBtn, this.gmToolSelected === "bottom", 0x2c3e50);
+    apply(pairBtn, this.gmToolSelected === "pair", 0x16a085);
   }
 
   private cancelGmSelection() {
@@ -1717,18 +1898,43 @@ export class Game extends Scene {
   private updateGmPreviewPosition(pointer: Phaser.Input.Pointer) {
     if (!this.localPlayerIsGM || !this.gmToolSelected || !this.gmPreviewSprite) return;
     const p = this.getPointerPosition(pointer);
-    const yInput = this.gmToolSelected === "top" ? p.y - this.pipeHeight : p.y;
-    const { x, y } = this.getClampedGmPlacement(p.x, yInput, this.gmToolSelected);
-    if (this.gmToolSelected === "top") {
-      // Ensure bottom of the flipped top pipe follows the cursor
-      this.gmPreviewSprite.setFlipY(true);
-      this.gmPreviewSprite.setOrigin(0.5, 1);
-      this.gmPreviewSprite.setPosition(x, y + this.pipeHeight);
+    
+    if (this.gmToolSelected === "pair") {
+      // For pipe pairs, cursor position is the center point between the two pipes
+      const { x, y } = this.getClampedGmPlacement(p.x, p.y, "pair");
+      
+      // Calculate gap (matching server logic)
+      const gap = this.getCurrentPipeGapClient();
+      
+      // Position top pipe (green, flipped) - bottom edge at (center - gap/2)
+      const topPipeBottomY = y - gap / 2;
+      this.gmPreviewSprite.setPosition(x, topPipeBottomY);
+      
+      // Position bottom pipe (red) - top edge at (center + gap/2)
+      const bottomPipeTopY = y + gap / 2;
+      if (this.gmPreviewSpriteBottom) {
+        this.gmPreviewSpriteBottom.setPosition(x, bottomPipeTopY);
+        this.gmPreviewSpriteBottom.setVisible(true);
+      }
     } else {
-      // Bottom pipe uses top-of-sprite anchor
-      this.gmPreviewSprite.setFlipY(false);
-      this.gmPreviewSprite.setOrigin(0.5, 0);
-      this.gmPreviewSprite.setPosition(x, y);
+      // Hide the second preview sprite for single pipe placement
+      if (this.gmPreviewSpriteBottom) {
+        this.gmPreviewSpriteBottom.setVisible(false);
+      }
+      
+      const yInput = this.gmToolSelected === "top" ? p.y - this.pipeHeight : p.y;
+      const { x, y } = this.getClampedGmPlacement(p.x, yInput, this.gmToolSelected);
+      if (this.gmToolSelected === "top") {
+        // Ensure bottom of the flipped top pipe follows the cursor
+        this.gmPreviewSprite.setFlipY(true);
+        this.gmPreviewSprite.setOrigin(0.5, 1);
+        this.gmPreviewSprite.setPosition(x, y + this.pipeHeight);
+      } else {
+        // Bottom pipe uses top-of-sprite anchor
+        this.gmPreviewSprite.setFlipY(false);
+        this.gmPreviewSprite.setOrigin(0.5, 0);
+        this.gmPreviewSprite.setPosition(x, y);
+      }
     }
   }
 
@@ -1745,27 +1951,55 @@ export class Game extends Scene {
       return;
     }
     const p = this.getPointerPosition(pointer);
-    const yInput = this.gmToolSelected === "top" ? p.y - this.pipeHeight : p.y;
-    const { x, y } = this.getClampedGmPlacement(p.x, yInput, this.gmToolSelected);
+    
+    let x: number, y: number;
+    if (this.gmToolSelected === "pair") {
+      // For pipe pairs, send the center point
+      const clamped = this.getClampedGmPlacement(p.x, p.y, "pair");
+      x = clamped.x;
+      y = clamped.y;
+    } else {
+      const yInput = this.gmToolSelected === "top" ? p.y - this.pipeHeight : p.y;
+      const clamped = this.getClampedGmPlacement(p.x, yInput, this.gmToolSelected);
+      x = clamped.x;
+      y = clamped.y;
+    }
+    
     this.room.send("gmPlaceObstacle", { kind: this.gmToolSelected, x, y });
 
     // Trigger hand closing animation for GM cursor
     this.triggerGmCursorFeedback();
   }
 
-  private getClampedGmPlacement(rawX: number, rawY: number, kind: "top" | "bottom") {
+  private getClampedGmPlacement(rawX: number, rawY: number, kind: "top" | "bottom" | "pair") {
     const width = Number(this.game.config.width);
     const height = Number(this.game.config.height);
     const midY = height / 2;
     const gap = this.getCurrentPipeGapClient();
     const halfGap = gap / 2;
+    const floorHeight = 112; // Match server constant
 
     // X only in right third of screen
     const minX = (2 / 3) * width;
     const maxX = width;
     const x = Phaser.Math.Clamp(rawX, minX, maxX);
 
-    if (kind === "bottom") {
+    if (kind === "pair") {
+      // For pipe pairs, rawY is the center point between the two pipes
+      // Clamp to ensure both pipes fit on screen
+      const floorY = height - floorHeight;
+      const topMargin = 40;
+      const bottomMargin = 40;
+      
+      // Calculate min/max center based on ensuring both pipes are at least partially visible
+      // Top pipe needs: centerY - halfGap - pipeHeight should be > topMargin (allow some off-screen)
+      // Bottom pipe needs: centerY + halfGap + pipeHeight should be < floorY - bottomMargin
+      const minCenter = topMargin + halfGap;
+      const maxCenter = floorY - bottomMargin - halfGap;
+      
+      const y = Phaser.Math.Clamp(rawY, minCenter, maxCenter);
+      return { x, y };
+    } else if (kind === "bottom") {
       // Top of bottom pipe in [midY + halfGap, screen bottom]
       const yMin = midY + halfGap;
       const yMax = height; // allow to go off-screen visually
@@ -1785,8 +2019,8 @@ export class Game extends Scene {
   private getCurrentPipeGapClient() {
     const difficulty = Number((this.room?.state as any)?.difficulty ?? 0);
     const gap = Math.max(this.previewMinPipeGap, this.previewMaxPipeGap - (difficulty * this.previewGapShrinkPerSec));
-    //return gap;
-    return 0; // disable gap guides for now
+    return gap;
+    // Note: Previously returned 0 to disable gap guides, but we need the gap for pipe pair previews
   }
 
   // Create (if missing) the dashed horizontal guide lines at center +/- gap/2 (only within X preview region)
@@ -1971,6 +2205,8 @@ export class Game extends Scene {
       console.log("No room, hiding ready UI");
       this.readyButtonBackground.setVisible(false);
       this.readyButtonBackground.disableInteractive();
+      this.readyButtonShadow?.setVisible(false);
+      this.readyButtonBorder?.setVisible(false);
       this.readyButtonLabel.setVisible(false);
       this.readyCountText.setVisible(false);
       // Hide skin selection when room is unavailable
@@ -2005,6 +2241,8 @@ export class Game extends Scene {
     }
 
     this.readyButtonBackground.setVisible(showLobbyUi);
+    this.readyButtonShadow?.setVisible(showLobbyUi);
+    this.readyButtonBorder?.setVisible(showLobbyUi);
     this.readyButtonLabel.setVisible(showLobbyUi);
     this.setSkinSelectionVisible(showLobbyUi && !this.localPlayerIsGM);
     // If entering lobby and the panel doesn't exist yet, (re)build it from cached options
@@ -2146,11 +2384,17 @@ export class Game extends Scene {
     try { this.readyCountText?.destroy(); } catch { /* noop */ } this.readyCountText = undefined as any;
     try { this.readyButtonLabel?.destroy(); } catch { /* noop */ } this.readyButtonLabel = undefined;
     try { this.readyButtonBackground?.destroy(); } catch { /* noop */ } this.readyButtonBackground = undefined;
+    try { this.readyButtonShadow?.destroy(); } catch { /* noop */ } this.readyButtonShadow = undefined;
+    try { this.readyButtonBorder?.destroy(); } catch { /* noop */ } this.readyButtonBorder = undefined;
     try { this.gameOverText?.destroy(); } catch { /* noop */ } this.gameOverText = undefined;
     try { this.restartButtonLabel?.destroy(); } catch { /* noop */ } this.restartButtonLabel = undefined;
     try { this.restartButton?.destroy(); } catch { /* noop */ } this.restartButton = undefined;
+    try { this.restartButtonShadow?.destroy(); } catch { /* noop */ } this.restartButtonShadow = undefined;
+    try { this.restartButtonBorder?.destroy(); } catch { /* noop */ } this.restartButtonBorder = undefined;
     try { this.returnButtonLabel?.destroy(); } catch { /* noop */ } this.returnButtonLabel = undefined;
     try { this.returnButton?.destroy(); } catch { /* noop */ } this.returnButton = undefined;
+    try { this.returnButtonShadow?.destroy(); } catch { /* noop */ } this.returnButtonShadow = undefined;
+    try { this.returnButtonBorder?.destroy(); } catch { /* noop */ } this.returnButtonBorder = undefined;
     try { this.gameOverScreen?.destroy(true); } catch { /* noop */ } this.gameOverScreen = undefined;
 
     // Volume UI
@@ -3093,66 +3337,21 @@ export class Game extends Scene {
       return;
     }
 
-    const players: Array<{ name: string; score: number; alive: boolean; ready: boolean; isLocal: boolean; role?: PlayerState["role"] }> = [];
-
-    this.room.state.players.forEach((player: PlayerState, sessionId: string) => {
-      players.push({
-        name: player.name,
-        score: player.score,
-        alive: player.alive,
-        ready: player.ready,
-        isLocal: sessionId === this.localPlayerId,
-        role: player.role,
-      });
-    });
-
-    players.sort((a, b) => {
-      if (b.score === a.score) {
-        return a.name.localeCompare(b.name);
-      }
-      return b.score - a.score;
-    });
-
     const running = this.room.state.running as boolean;
-    const stageValue = this.getCurrentStageValue();
-    const clampedStage = Math.max(0, Math.min(this.maxStage, stageValue));
 
-    if (players.length === 0) {
-      this.scoreText.setText("Waiting for players...");
+    // Get local player data
+    const localPlayer = this.room.state.players.get(this.localPlayerId) as PlayerState | undefined;
+
+    if (running && localPlayer) {
+      // During game: show only local player's score with large font
+      const score = localPlayer.score || 0;
+      this.scoreText.setText(`${score}`);
+      this.scoreText.setVisible(true);
+      // No backdrop shown for cleaner look
     } else {
-      const headerLines: string[] = [];
-      if (running) {
-        headerLines.push(`Stage ${Math.max(1, clampedStage)}/${this.maxStage}`);
-      }
-
-      const lines = players.map((player) => {
-        // Non-playing roles
-        const role = (player as any).role;
-        if (role === "gm") {
-          return `${player.isLocal ? "* " : ""}${player.name} (Pig King)`;
-        }
-        if (role === "spectator") {
-          return `${player.isLocal ? "* " : ""}${player.name} (Spectator)`;
-        }
-        const prefix = player.isLocal ? "▶ " : "";
-        if (running) {
-          const status = player.alive ? "🟢" : "✖";
-          return `${prefix}${player.name}: ${player.score} ${status}`;
-        }
-
-        const status = player.ready ? "✅ Ready" : "⌛ Waiting";
-        return `${prefix}${player.name} ${status}`;
-      });
-      this.scoreText.setText([...headerLines, ...lines].join("\n"));
+      // In lobby: hide the score display
+      this.scoreText.setVisible(false);
     }
-
-    // Update backdrop size and ensure it stays centered
-    const padding = 40;
-    const verticalPadding = 30;
-    this.scoreBackdrop.setSize(this.scoreText.width + padding, this.scoreText.height + verticalPadding);
-    this.scoreBackdrop.setPosition(this.scoreText.x, this.scoreText.y);
-    //this.updateReadyUI();
-    //void this.updateDiscordActivityPresence();
   }
 
   private updateStatusMessage() {
@@ -3397,19 +3596,16 @@ export class Game extends Scene {
   }
 
   private animateLocalScoreIncrease(diff: number, _newScore: number) {
-    // Pulse the scoreboard text (and backdrop) and spawn a floating +N indicator
+    // Pulse the scoreboard text and spawn a floating +N indicator
     try { this.scorePulseTween?.stop(); } catch { /* noop */ }
-    const pulseTargets: any[] = [];
-    if (this.scoreText) pulseTargets.push(this.scoreText);
-    if (this.scoreBackdrop) pulseTargets.push(this.scoreBackdrop);
-    if (pulseTargets.length > 0) {
+    if (this.scoreText) {
       // Reset scale to baseline before pulsing
-      pulseTargets.forEach((t) => { try { t.setScale?.(1); } catch { /* noop */ } });
+      try { this.scoreText.setScale(1); } catch { /* noop */ }
       this.scorePulseTween = this.tweens.add({
-        targets: pulseTargets,
-        scaleX: { from: 1, to: 1.15 },
-        scaleY: { from: 1, to: 1.15 },
-        duration: 100,
+        targets: this.scoreText,
+        scaleX: { from: 1, to: 1.2 },
+        scaleY: { from: 1, to: 1.2 },
+        duration: 150,
         yoyo: true,
         ease: 'Back.out',
       });
@@ -3417,30 +3613,31 @@ export class Game extends Scene {
 
     // Floating +N text near the scoreboard
     const x = this.scoreText?.x ?? (Number(this.game.config.width) / 2);
-    const y = (this.scoreText?.y ?? 40) - 10;
+    const y = (this.scoreText?.y ?? 50) + 30; // Position below the score
     const pop = this.add.text(x, y, `+${diff}`, {
       fontFamily: FONT_PRIMARY,
-      fontSize: 24,
-      color: '#ffd369',
+      fontSize: 28,
+      color: '#00ff00',
       stroke: '#000000',
-      strokeThickness: 4,
+      strokeThickness: 5,
       align: 'center',
     }).setOrigin(0.5).setDepth(12);
-    pop.setScale(0.8);
+    pop.setScale(0.5);
     pop.setAlpha(0.0);
     this.tweens.add({
       targets: pop,
-      y: y - 24,
+      y: y + 30,
       alpha: { from: 0, to: 1 },
-      scale: { from: 0.8, to: 1.0 },
-      duration: 180,
-      ease: 'Quad.easeOut',
+      scale: { from: 0.5, to: 1.2 },
+      duration: 200,
+      ease: 'Back.out',
       onComplete: () => {
         this.tweens.add({
           targets: pop,
-          y: y - 40,
+          y: y + 50,
           alpha: { from: 1, to: 0 },
-          duration: 220,
+          scale: { from: 1.2, to: 1.0 },
+          duration: 300,
           ease: 'Quad.easeIn',
           onComplete: () => { try { pop.destroy(); } catch { /* noop */ } },
         });
