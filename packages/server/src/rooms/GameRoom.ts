@@ -58,9 +58,9 @@ export class GameRoom extends Room<GameState> {
   private readonly stageSpeedIncrement = 0.2; // +20% pipe speed per stage
   private readonly powerUpIntervalSec = 3; // fallback interval if def not sampled
   private powerUpDefs: PowerUpDef[] = [
-    new PowerUpDef("coin", "+2 Points!", "coin", 5),
-    new PowerUpDef("hammer", "Hammer Time!", "hammer", 5),
-    new PowerUpDef("star", "Shield!", "star", 5),
+    new PowerUpDef("coin", "+2 Points!", "coin", 3),
+    new PowerUpDef("hammer", "Hammer Time!", "hammer", 3),
+    new PowerUpDef("star", "Shield!", "star", 3),
   ];
   private currentPowerUpIntervalSec = this.powerUpIntervalSec;
 
@@ -581,7 +581,7 @@ export class GameRoom extends Room<GameState> {
   }
 
   private killPlayer(player: PlayerState, reason: string) {
-    return; // DEBUG: disable death
+    //return; // DEBUG: disable death
     player.alive = false;
     // Update personal bird high score on death
     try {
@@ -990,42 +990,56 @@ export class GameRoom extends Room<GameState> {
   // -- Power-Ups ------------------------------------------------------------
   // Compute blocked vertical ranges at a given X due to pipes/obstacles.
   // Returns a list of [startY, endY] intervals (inclusive of a small margin)
+  // Only check pipes that are close enough in X to potentially collide with the power-up.
+  // Since both move at the same speed, we only care about their INITIAL relative X distance.
   private getBlockedYRangesAtX(x: number, minY: number, maxY: number): Array<[number, number]> {
     const halfW = this.pipeWidth / 2;
-    const safety = this.powerUpPickupRadius + 4; // keep pickup circle away from edges
+    const safety = 8; // Small buffer to avoid edge clipping
+
+    // Only check pipes within this X distance (they'll collide if closer than pipeWidth + powerup size)
+    // Add extra margin for pickup radius and some safety
+    const maxDeltaX = this.pipeWidth + this.powerUpPickupRadius * 2 + 20;
 
     const ranges: Array<[number, number]> = [];
 
-    // Pipes: add top and bottom rectangles if x overlaps pipe column
+    // Only check pipes that are horizontally close enough to matter
     for (const pipe of this.state.pipes) {
-      const left = pipe.x - halfW;
-      const right = pipe.x + halfW;
-      if (x >= left && x <= right) {
-        // top pipe: [Ytop, Ytop + pipeHeight]
-        const topStart = Math.max(minY, pipe.Ytop - safety);
-        const topEnd = Math.min(maxY, pipe.Ytop + this.pipeHeight + safety);
-        if (topStart < topEnd) {
-          ranges.push([topStart, topEnd]);
-        }
-        // bottom pipe: [Ybottom, Ybottom + pipeHeight]
-        const botStart = Math.max(minY, pipe.Ybottom - safety);
-        const botEnd = Math.min(maxY, pipe.Ybottom + this.pipeHeight + safety);
-        if (botStart < botEnd) {
-          ranges.push([botStart, botEnd]);
-        }
+      const deltaX = Math.abs(x - pipe.x);
+
+      // Skip pipes that are too far away horizontally - they'll never collide with this power-up
+      if (deltaX > maxDeltaX) {
+        continue;
+      }
+
+      // top pipe: [Ytop, Ytop + pipeHeight]
+      const topStart = Math.max(minY, pipe.Ytop - safety);
+      const topEnd = Math.min(maxY, pipe.Ytop + this.pipeHeight + safety);
+      if (topStart < topEnd) {
+        ranges.push([topStart, topEnd]);
+        //logger.debug(`Blocked range (top pipe): id=${pipe.id}, pipeX=${pipe.x.toFixed(1)}, deltaX=${deltaX.toFixed(1)}, Y=[${topStart.toFixed(1)}, ${topEnd.toFixed(1)}]`);
+      }
+      // bottom pipe: [Ybottom, Ybottom + pipeHeight]
+      const botStart = Math.max(minY, pipe.Ybottom - safety);
+      const botEnd = Math.min(maxY, pipe.Ybottom + this.pipeHeight + safety);
+      if (botStart < botEnd) {
+        ranges.push([botStart, botEnd]);
+        //logger.debug(`Blocked range (bottom pipe): id=${pipe.id}, pipeX=${pipe.x.toFixed(1)}, deltaX=${deltaX.toFixed(1)}, Y=[${botStart.toFixed(1)}, ${botEnd.toFixed(1)}]`);
       }
     }
 
-    // GM-placed obstacles
+    // GM-placed obstacles - only check nearby ones
     for (const obs of this.state.placedObstacles) {
-      const left = obs.x - halfW;
-      const right = obs.x + halfW;
-      if (x >= left && x <= right) {
-        const start = Math.max(minY, obs.y - safety);
-        const end = Math.min(maxY, obs.y + this.pipeHeight + safety);
-        if (start < end) {
-          ranges.push([start, end]);
-        }
+      const deltaX = Math.abs(x - obs.x);
+
+      if (deltaX > maxDeltaX) {
+        continue;
+      }
+
+      const start = Math.max(minY, obs.y - safety);
+      const end = Math.min(maxY, obs.y + this.pipeHeight + safety);
+      if (start < end) {
+        ranges.push([start, end]);
+        logger.debug(`Blocked range (obstacle): id=${obs.id}, obsX=${obs.x.toFixed(1)}, deltaX=${deltaX.toFixed(1)}, Y=[${start.toFixed(1)}, ${end.toFixed(1)}]`);
       }
     }
 
@@ -1048,6 +1062,8 @@ export class GameRoom extends Room<GameState> {
     if (!(maxY > minY)) return null;
     const blocked = this.getBlockedYRangesAtX(x, minY, maxY);
 
+    logger.debug(`pickSafePowerUpYAtX: x=${x.toFixed(1)}, blocked ranges:`, blocked.map(r => `[${r[0].toFixed(1)}, ${r[1].toFixed(1)}]`));
+
     // Build allowed ranges by subtracting blocked from [minY, maxY]
     const allowed: Array<[number, number]> = [];
     let cursor = minY;
@@ -1062,10 +1078,14 @@ export class GameRoom extends Room<GameState> {
       allowed.push([cursor, maxY]);
     }
 
+    logger.debug(`pickSafePowerUpYAtX: allowed ranges:`, allowed.map(r => `[${r[0].toFixed(1)}, ${r[1].toFixed(1)}]`));
+
     // Require a minimal span so pickup circle fits comfortably
-    const minSpan = Math.max(10, this.powerUpPickupRadius * 2);
+    // Use just the pickup radius (not diameter) to allow tighter placement
+    const minSpan = this.powerUpPickupRadius + 10; // Just enough room for the sprite center + small buffer
     const viable = allowed.filter(([a, b]) => b - a >= minSpan);
     if (viable.length === 0) {
+      logger.warn(`pickSafePowerUpYAtX: No viable ranges (minSpan=${minSpan})`);
       return null;
     }
 
@@ -1080,6 +1100,7 @@ export class GameRoom extends Room<GameState> {
       }
     }
     const y = best[0] + Math.random() * (best[1] - best[0]);
+    logger.debug(`pickSafePowerUpYAtX: picked Y=${y.toFixed(1)} from range [${best[0].toFixed(1)}, ${best[1].toFixed(1)}]`);
     return y;
   }
 
@@ -1094,6 +1115,10 @@ export class GameRoom extends Room<GameState> {
     const bottomMargin = 80;
     const minY = topMargin;
     const maxY = Math.max(minY, floorY - bottomMargin);
+
+    // Log current pipes for debugging
+    logger.debug(`PowerUp spawn attempt: x=${x.toFixed(1)}, pipes in world:`, this.state.pipes.map(p => ({ id: p.id, x: p.x.toFixed(1), Ytop: p.Ytop.toFixed(1), Ybottom: p.Ybottom.toFixed(1) })));
+
     // Pick a safe Y that avoids overlapping pipes/obstacles at this X
     const picked = this.pickSafePowerUpYAtX(x, minY, maxY);
     if (picked == null) {

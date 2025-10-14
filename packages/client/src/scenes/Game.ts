@@ -128,7 +128,7 @@ export class Game extends Scene {
   private volumeSliderHitArea?: Phaser.GameObjects.Zone;
   private volumeSliderKnob?: Phaser.GameObjects.Rectangle;
   private volumeText?: Phaser.GameObjects.Text;
-  private currentVolume: number = 0.1;  // Default volume
+  private currentVolume: number = 0.2;  // Default volume
   private isDraggingVolume: boolean = false;
 
   // GM tools and preview
@@ -204,6 +204,9 @@ export class Game extends Scene {
   }
 
   async create() {
+
+    // Set initial volume
+    this.sound.setVolume(this.currentVolume);
 
     this.setupWorld();
     this.setupUI();
@@ -2259,14 +2262,6 @@ export class Game extends Scene {
       this.removePlayer(sessionId);
     });
 
-    // Hydrate existing pipes
-    if (this.room.state.pipes instanceof Array) {
-      (this.room.state.pipes as any[]).forEach((pipe: PipeState) => {
-        console.log("Hydrate pipe:", pipe);
-        this.addPipe(pipe);
-      });
-    }
-
     // Hydrate GM placed obstacles (if any)
     const placed = (this.room.state as any).placedObstacles as any;
     if (placed && typeof placed.forEach === "function") {
@@ -2859,6 +2854,13 @@ export class Game extends Scene {
   }
 
   private addPipe(pipe: PipeState) {
+    // Check if pipe already exists to prevent duplicates
+    if (this.pipeSprites.has(pipe.id)) {
+      //console.log("Pipe already exists:", pipe.id, "updating instead");
+      this.updatePipe(pipe);
+      return;
+    }
+
     //console.log("Adding pipe:", pipe.id, "at x:", pipe.x, "Ytop:", pipe.Ytop);
 
     const top = this.add.image(pipe.x, pipe.Ytop, "pipe");
