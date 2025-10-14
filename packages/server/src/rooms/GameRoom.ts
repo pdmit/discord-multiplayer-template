@@ -47,7 +47,7 @@ export class GameRoom extends Room<GameState> {
   private obstacleDebugAccumulator = 0; // seconds
   private gmCharges = new Map<string, { charges: number; lastRechargeAt: number }>();
   private numObstacleCharges = 3;
-  private obstacleRechargeSeconds = 5;
+  private obstacleRechargeSeconds = 2;
   private readonly powerUpPickupRadius = 28; // px
   private skins: Array<PlayerState["skin"]> = ["yellow", "blue", "red", "green", "purple", "orange"];
   private worldWidth = 1280;
@@ -125,15 +125,16 @@ export class GameRoom extends Room<GameState> {
       this.gmCharges.set(sessionId, entry);
     }
 
-    const nextInMs = entry.charges >= this.numObstacleCharges 
-      ? 0 
+    const nextInMs = entry.charges >= this.numObstacleCharges
+      ? 0
       : (this.obstacleRechargeSeconds * 1000 - ((now - entry.lastRechargeAt) % (this.obstacleRechargeSeconds * 1000)));
 
-    client.send("gmChargeUpdate", { 
-      charges: entry.charges, 
-      max: this.numObstacleCharges, 
-      nextInMs 
+    client.send("gmChargeUpdate", {
+      charges: entry.charges,
+      max: this.numObstacleCharges,
+      nextInMs
     });
+    logger.debug(`Sent gmChargeUpdate to ${sessionId}:`, { charges: entry.charges, max: this.numObstacleCharges, nextInMs });
   }
 
   onCreate(): void {
@@ -298,22 +299,7 @@ export class GameRoom extends Room<GameState> {
         entry = { charges: 3, lastRechargeAt: now };
         this.gmCharges.set(client.sessionId, entry);
       }
-      // Recharge if time elapsed
-      const chargesBeforeRecharge = entry.charges;
-      if (entry.charges < this.numObstacleCharges) {
-        const elapsed = now - entry.lastRechargeAt;
-        if (elapsed >= this.obstacleRechargeSeconds * 1000) {
-          const gained = Math.floor(elapsed / (this.obstacleRechargeSeconds * 1000));
-          entry.charges = Math.min(this.numObstacleCharges, entry.charges + gained);
-          entry.lastRechargeAt += gained * this.obstacleRechargeSeconds * 1000;
-          
-          // Notify GM if charges were actually recharged
-          if (entry.charges > chargesBeforeRecharge) {
-            this.sendGMChargeUpdate(client.sessionId);
-          }
-        }
-      }
-      
+
       if (entry.charges <= 0) {
         logger.warn(`gmPlaceObstacle rejected - no charges`);
         this.sendGMChargeUpdate(client.sessionId);
@@ -371,8 +357,9 @@ export class GameRoom extends Room<GameState> {
       logger.info(`GM placed obstacle: id=${obs.id}, kind=${kind}, x=${obs.x}, y=${obs.y}`);
       logger.debug("placedObstacles length after add", { count: this.state.placedObstacles.length });
 
-      // Spend charge and notify
+      // Spend charge and reset recharge timer
       entry.charges = Math.max(0, entry.charges - 1);
+      entry.lastRechargeAt = now; // Reset timer when spending a charge
       this.sendGMChargeUpdate(client.sessionId);
     });
 
@@ -594,7 +581,7 @@ export class GameRoom extends Room<GameState> {
   }
 
   private killPlayer(player: PlayerState, reason: string) {
-    //return; // DEBUG: disable death
+    return; // DEBUG: disable death
     player.alive = false;
     // Update personal bird high score on death
     try {
@@ -675,11 +662,44 @@ export class GameRoom extends Room<GameState> {
       }
     }
 
+    // Player collision and movement update, GM recharge logic
     const nowMs = Date.now();
     for (const [, player] of this.state.players) {
-      if ((player as any).role === "gm" || (player as any).role === "spectator") {
-        continue; // spectators not updated
+      if ((player as any).role === "spectator") {
+        continue;
       }
+
+      if ((player as any).role === "gm") {
+        const clientSessionId = this.findPlayerId(player);
+        if (!clientSessionId) continue;
+
+        let entry = this.gmCharges.get(clientSessionId);
+        if (!entry) {
+          // Initialize GM charges if not present
+          entry = { charges: this.numObstacleCharges, lastRechargeAt: nowMs };
+          this.gmCharges.set(clientSessionId, entry);
+        }
+
+        // Only process recharge if below max charges
+        if (entry.charges < this.numObstacleCharges) {
+          const elapsed = nowMs - entry.lastRechargeAt;
+          const rechargeIntervalMs = this.obstacleRechargeSeconds * 1000;
+
+          if (elapsed >= rechargeIntervalMs) {
+            const gained = Math.floor(elapsed / rechargeIntervalMs);
+            const oldCharges = entry.charges;
+            entry.charges = Math.min(this.numObstacleCharges, entry.charges + gained);
+            entry.lastRechargeAt += gained * rechargeIntervalMs;
+
+            // Only notify client if charges actually increased
+            if (entry.charges > oldCharges) {
+              this.sendGMChargeUpdate(clientSessionId);
+              logger.debug(`GM ${clientSessionId} recharged: ${oldCharges} -> ${entry.charges}`);
+            }
+          }
+        }
+      }
+
       if (!player.alive) {
         continue;
       }
@@ -697,7 +717,7 @@ export class GameRoom extends Room<GameState> {
       }
 
       if (player.y + this.birdHalfHeight >= floorY) {
-        logger.warn(`Player hit floor at y=${player.y}, floorY=${floorY}`);
+        //logger.warn(`Player hit floor at y=${player.y}, floorY=${floorY}`);
         player.y = floorY - this.birdHalfHeight;
         if (!shieldActiveThisTick) {
           this.killPlayer(player, "floor collision");
@@ -889,6 +909,17 @@ export class GameRoom extends Room<GameState> {
       for (const [, player] of this.state.players) {
         player.velocity = 0;
       }
+    }
+
+    // If no players remain, stop the game
+    if (this.state.players.size === 0) {
+      this.state.running = false;
+      this.applyStage(0);
+      // Defer clearing to next tick to avoid delete+patch ordering issues
+      this.deferClearLevel();
+      this.setAllPlayersReady(false);
+      logger.warn("No players remaining; stopping game");
+      return;
     }
     // Otherwise, keep playing until birds or pig king win
   }

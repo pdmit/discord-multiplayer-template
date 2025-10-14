@@ -142,6 +142,8 @@ export class Game extends Scene {
   private gmChargeText?: Phaser.GameObjects.Text;
   // GM cursor (visible to all players)
   private gmCursor?: Phaser.GameObjects.Container;
+  private gmCursorSprite?: Phaser.GameObjects.Image;
+  private gmCursorCloseTimer?: Phaser.Time.TimerEvent;
 
   // Mirror server gap logic for client-side preview (constants must match server)
   private readonly previewMaxPipeGap = 300;
@@ -1548,58 +1550,21 @@ export class Game extends Scene {
   }
 
   private createGmCursor() {
-    // Create a cartoonish red cursor that will be visible to all players
+    // Create a hand cursor sprite that will be visible to all players
     // showing where the GM's cursor is positioned
     const container = this.add.container(0, 0);
     container.setDepth(100); // High depth to be above most elements
 
-    // Create a red hand cursor shape using graphics
-    const cursorGraphics = this.add.graphics();
-    cursorGraphics.lineStyle(3, 0x000000, 1); // Black outline
-    cursorGraphics.fillStyle(0xff3333, 1); // Bright red fill
-    
-    // Draw a cartoon hand/pointer shape
-    // Main pointer triangle
-    cursorGraphics.beginPath();
-    cursorGraphics.moveTo(0, 0);
-    cursorGraphics.lineTo(8, 24);
-    cursorGraphics.lineTo(3, 20);
-    cursorGraphics.lineTo(-2, 28);
-    cursorGraphics.lineTo(-7, 25);
-    cursorGraphics.lineTo(-2, 17);
-    cursorGraphics.lineTo(-8, 18);
-    cursorGraphics.closePath();
-    cursorGraphics.fillPath();
-    cursorGraphics.strokePath();
+    // Create hand sprite - starts with pointing hand
+    const handSprite = this.add.image(0, 0, "hand_pointing");
+    handSprite.setOrigin(0.2, 0.1); // Position the origin at the finger tip
+    handSprite.setScale(1.2); // Scale down if needed
+    handSprite.setTint(0xce4c8d);
 
-    // Add a white highlight for cartoonish effect
-    const highlight = this.add.graphics();
-    highlight.fillStyle(0xffffff, 0.6);
-    highlight.fillCircle(0, 8, 3);
+    // Store reference to the sprite for later access
+    this.gmCursorSprite = handSprite;
 
-    // Add a subtle glow/shadow effect
-    const glow = this.add.graphics();
-    glow.fillStyle(0xff0000, 0.3);
-    glow.fillCircle(0, 14, 20);
-    glow.setBlendMode(Phaser.BlendModes.ADD);
-
-    // Create a pulsing animation circle
-    const pulseCircle = this.add.graphics();
-    pulseCircle.lineStyle(2, 0xff3333, 0.8);
-    pulseCircle.strokeCircle(0, 14, 15);
-
-    container.add([glow, pulseCircle, cursorGraphics, highlight]);
-
-    // Add pulse animation
-    this.tweens.add({
-      targets: pulseCircle,
-      alpha: { from: 0.8, to: 0.2 },
-      scale: { from: 1, to: 1.3 },
-      duration: 800,
-      yoyo: true,
-      repeat: -1,
-      ease: 'Sine.easeInOut'
-    });
+    container.add([handSprite]);
 
     // Initially hidden until we get GM cursor data
     container.setVisible(false);
@@ -1612,28 +1577,54 @@ export class Game extends Scene {
     }
 
     const state = this.room.state as any;
-    
+
     // Check if there's a GM in the game
     const hasGM = state.gameMasterId && state.gameMasterId !== "";
-    
+
     // Hide cursor if no GM or if local player is the GM (they see their own cursor)
-    if (!hasGM || this.localPlayerIsGM) {
+    if (!hasGM) {
       this.gmCursor.setVisible(false);
       return;
+    }
+
+    if (this.localPlayerIsGM) {
+      this.input.setDefaultCursor("none");
     }
 
     // Show and update GM cursor position
     const gmX = state.gmCursorX ?? 0;
     const gmY = state.gmCursorY ?? 0;
-    
+
     // Smoothly interpolate cursor position for smooth movement
     const currentX = this.gmCursor.x;
     const currentY = this.gmCursor.y;
     const lerpFactor = 0.3; // Smooth follow
-    
+
     this.gmCursor.x = Phaser.Math.Linear(currentX, gmX, lerpFactor);
     this.gmCursor.y = Phaser.Math.Linear(currentY, gmY, lerpFactor);
     this.gmCursor.setVisible(true);
+  }
+
+  private triggerGmCursorFeedback() {
+    // Change cursor to closed hand for 250ms when placing obstacle
+    if (!this.gmCursorSprite) return;
+
+    // Clear any existing timer
+    if (this.gmCursorCloseTimer) {
+      this.gmCursorCloseTimer.destroy();
+      this.gmCursorCloseTimer = undefined;
+    }
+
+    // Change to closed hand
+    this.gmCursorSprite.setTexture("hand_closed");
+
+    // Set timer to revert back to pointing hand after 250ms
+    this.gmCursorCloseTimer = this.time.delayedCall(250, () => {
+      if (this.gmCursorSprite) {
+        this.gmCursorSprite.setTexture("hand_pointing");
+      }
+      this.gmCursorCloseTimer = undefined;
+    });
   }
 
   private updateGmUiVisibility() {
@@ -1732,6 +1723,9 @@ export class Game extends Scene {
     const yInput = this.gmToolSelected === "top" ? p.y - this.pipeHeight : p.y;
     const { x, y } = this.getClampedGmPlacement(p.x, yInput, this.gmToolSelected);
     this.room.send("gmPlaceObstacle", { kind: this.gmToolSelected, x, y });
+
+    // Trigger hand closing animation for GM cursor
+    this.triggerGmCursorFeedback();
   }
 
   private getClampedGmPlacement(rawX: number, rawY: number, kind: "top" | "bottom") {
@@ -2020,10 +2014,45 @@ export class Game extends Scene {
       this.localPlayerId = this.room.sessionId;
       console.log("Connected to room, sessionId:", this.localPlayerId);
       void this.updateDiscordActivityPresence();
+
+      // Handle disconnection and attempt to reconnect
+      this.room.onLeave((code) => {
+        console.log(`Disconnected from server with code: ${code}`);
+        this.handleDisconnect(code);
+      });
+
+      this.room.onError((code, message) => {
+        console.error(`Room error (${code}): ${message}`);
+        this.scoreText.setText(`Error: ${message}`);
+      });
     } catch (e) {
       console.log(`Could not connect with the server: ${e}`);
       this.scoreText.setText("Connection failed");
+      // Attempt to reconnect after a delay
+      this.time.delayedCall(3000, () => {
+        console.log("Attempting to reconnect...");
+        this.scene.restart();
+      });
     }
+  }
+
+  private handleDisconnect(code: number) {
+    // Colyseus disconnect codes:
+    // 1000 = normal closure
+    // 1001-1015 = various WebSocket close codes
+    // 4000+ = custom application codes
+
+    console.log("Connection lost. Attempting to reconnect...");
+    this.scoreText.setText("Connection lost. Reconnecting...");
+
+    // Clean up current room reference
+    this.room = undefined;
+
+    // Wait a bit before restarting to avoid hammering the server
+    this.time.delayedCall(2000, () => {
+      console.log("Restarting scene to reconnect...");
+      this.scene.restart();
+    });
   }
 
   private async returnToMenu() {
@@ -2329,7 +2358,7 @@ export class Game extends Scene {
         const nextMs = Math.max(0, Number(payload?.nextInMs ?? 0));
         this.gmNextReadyAt = Date.now() + nextMs;
         this.updateGmChargeUi();
-        console.log ("GM charge update:", this.gmCharges, "/", this.gmMaxCharges, "next in", nextMs, "ms");
+        console.log("GM charge update:", this.gmCharges, "/", this.gmMaxCharges, "next in", nextMs, "ms");
       } catch { /* ignore */ }
     });
 

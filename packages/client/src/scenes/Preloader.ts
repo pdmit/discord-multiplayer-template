@@ -91,6 +91,9 @@ export class Preloader extends Scene {
     this.load.spritesheet("pickup_anim", "pickup_anim.png", { frameWidth: 32, frameHeight: 32 });
     // Pig King avatar
     this.load.image("pig-king-cropped", "pig-king-cropped.png");
+    // GM cursor hand sprites
+    this.load.image("hand_pointing", "hand_pointing.png");
+    this.load.image("hand_closed", "hand_closed.png");
 
     this.load.setPath("/.proxy/assets/flappy-bird-assets/audio");
     this.load.audio("wing", ["wing.ogg", "wing.wav"]);
