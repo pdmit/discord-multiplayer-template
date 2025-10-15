@@ -7,6 +7,7 @@ import { WebSocketTransport } from "@colyseus/ws-transport";
 import path from "path";
 
 import { GameRoom } from "./rooms/GameRoom";
+import logger from "./logger";
 
 dotenv.config({ path: "../../.env" });
 
@@ -71,5 +72,5 @@ router.post("/api/token", async (req: Request, res: Response) => {
 app.use(process.env.NODE_ENV === "production" ? "/.proxy/api" : "/", router);
 
 server.listen(port).then(() => {
-  console.log(`App is listening on port ${port} !`);
+  logger.info(`App is listening on port ${port} !`);
 });

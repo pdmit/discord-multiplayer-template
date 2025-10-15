@@ -96,9 +96,7 @@ export class ScaleFlow {
 
     ScaleFlow.scaleFactor = scaleFactor;
 
-    ScaleFlow.cameras.forEach((camera) => {
-      camera.zoom = scaleFactor;
-    });
+    // Let Phaser Scale Manager handle display scaling; keep camera zoom at 1
 
     this.game.events.emit(ScaleFlow.RESIZE);
   }
@@ -106,7 +104,7 @@ export class ScaleFlow {
   static addCamera(camera: Phaser.Cameras.Scene2D.Camera): void {
     this.cameras.add(camera);
 
-    camera.zoom = ScaleFlow.scaleFactor;
+    // Do not override camera zoom; Phaser handles scaling
   }
 
   static removeCamera(camera: Phaser.Cameras.Scene2D.Camera): void {

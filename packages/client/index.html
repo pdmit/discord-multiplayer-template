@@ -5,14 +5,39 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Discord Colyseus Phaser Template</title>
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Jersey+10&family=Nunito:wght@400;700&display=swap" rel="stylesheet">
 
     <style>
+      /* Preload fonts with proper font-face declarations */
+      @import url('https://fonts.googleapis.com/css2?family=Jersey+10&family=Nunito:wght@400;700&display=swap');
+      
       html, body {
           width: 100vw;
           height: 100vh;
           margin: 0;
           padding: 0;
           background-color: black;
+      }
+      
+      /* Hidden element to force font loading */
+      body::before {
+          content: 'Loading';
+          font-family: 'Jersey 10', sans-serif;
+          position: absolute;
+          opacity: 0;
+          pointer-events: none;
+      }
+      
+      body::after {
+          content: 'Loading';
+          font-family: 'Nunito', sans-serif;
+          position: absolute;
+          opacity: 0;
+          pointer-events: none;
       }
 
       #gameParent {
@@ -33,11 +58,7 @@
           pointer-events: none;
       }
 
-      canvas {
-          width: 100%;
-          height: 100%;
-          object-fit: cover;
-      }
+      /* Let Phaser Scale Manager size the canvas; avoid CSS scaling/cropping */
   </style>
   </head>
   <body>
